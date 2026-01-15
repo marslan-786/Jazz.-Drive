@@ -5,7 +5,6 @@ import uuid
 import os
 import io
 import datetime
-import mimetypes
 from flask import Flask, Response, request, render_template_string, stream_with_context
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -24,7 +23,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive - Manual Mode</title>
+    <title>Jazz Drive - Auto Share (Final)</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -51,13 +50,13 @@ HTML_CODE = """
         .log-success { color: #00ff00; }
         .log-error { color: #ff4444; }
         .log-header { color: #ffff00; font-size: 12px; }
-        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; }
+        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; cursor: pointer; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Auto (Manual Headers)</h1>
+        <h1>Jazz Drive Auto Share</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -244,7 +243,6 @@ def process_step_1(phone_number):
             device_id = get_random_device_id()
             yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
         
-        # Selenium cookies are helpful for OTP step
         for cookie in driver.get_cookies():
             session.cookies.set(cookie['name'], cookie['value'])
             
@@ -256,6 +254,7 @@ def process_step_1(phone_number):
 
         yield send_log(f"5. API Call: OTP بھیجا جا رہا ہے...")
         
+        # Referer header is safer
         session.headers['Referer'] = target_url
         payload = {'enrichment_status': '', 'msisdn': phone_number}
         
@@ -278,7 +277,7 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> UPLOAD -> SHARE (MANUAL HEADERS FIX)
+# STEP 2: VERIFY -> UPLOAD -> SHARE (MANUAL FIX)
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
@@ -310,9 +309,10 @@ def process_step_2(otp, verify_url, device_id):
             'keytype': 'authorizationcode', 'key': auth_code
         }
         
-        session.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+        headers = session.headers.copy()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
         
-        resp_login = session.get(sapi_url, params=params, timeout=45)
+        resp_login = session.get(sapi_url, params=params, headers=headers, timeout=45)
         
         try:
             login_json = resp_login.json()
@@ -326,8 +326,7 @@ def process_step_2(otp, verify_url, device_id):
             
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
             
-            # --- MANUAL HEADERS CONSTRUCTION (The Success Method) ---
-            # session کو اب بائی پاس کر رہے ہیں تاکہ PAPI-0000 نہ آئے
+            # --- MANUAL HEADERS (The Success Method) ---
             cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
             manual_headers = {
@@ -342,12 +341,10 @@ def process_step_2(otp, verify_url, device_id):
                 'Origin': 'https://cloud.jazzdrive.com.pk',
                 'Referer': 'https://cloud.jazzdrive.com.pk/',
                 'Cookie': cookie_string
-                # No Content-Type here, let requests handle multipart boundary
             }
 
-            # 7.5 Warmup (Using requests.get directly with manual headers)
+            # 7.5 Warmup
             yield send_log("7.5. سیشن Warm-up (Manual Mode)...", 'info')
-            
             requests.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
                          params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
                          
@@ -382,7 +379,7 @@ def process_step_2(otp, verify_url, device_id):
                 upload_url, 
                 params=upload_params, 
                 files=multipart_payload,
-                headers=manual_headers, # Explicit headers
+                headers=manual_headers,
                 timeout=120
             )
             
@@ -398,7 +395,9 @@ def process_step_2(otp, verify_url, device_id):
                  yield send_log("⚠️ اپلوڈ میں مسئلہ ہے: " + resp_upload.text, 'error')
                  return
 
-            # 9. CREATE SHARE LINK
+            # ----------------------------------------
+            # 9. CREATE SHARE LINK (Integrated)
+            # ----------------------------------------
             if uploaded_file_id:
                 yield send_log("9. پبلک لنک جنریٹ کیا جا رہا ہے...", 'header')
                 share_url = "https://cloud.jazzdrive.com.pk/sapi/media/set"
@@ -416,7 +415,7 @@ def process_step_2(otp, verify_url, device_id):
                     }
                 }
                 
-                # For JSON sharing, we need content-type json
+                # Headers for Share (JSON Content Type needed)
                 share_headers = manual_headers.copy()
                 share_headers['Content-Type'] = 'application/json;charset=UTF-8'
                 
