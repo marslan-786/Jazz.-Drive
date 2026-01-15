@@ -1,303 +1,381 @@
-import os
-import uvicorn
-import requests
+import time
 import json
+import requests
+import uuid
+import os
+import random
+from flask import Flask, Response, request, render_template_string, stream_with_context
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 from urllib.parse import urlparse, parse_qs
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
-from playwright.sync_api import sync_playwright
 
-app = FastAPI()
+app = Flask(__name__)
 
-# --- Global Logs ---
-logs_db = {}
-
-# --- HAR File Headers (Desktop Mode) ---
-# یہ وہ ہیڈرز ہیں جو آپ کی HAR فائل میں پی سی کے لیے استعمال ہوئے
-COMMON_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1"
-}
-
-# کلاؤڈ API کے لیے خاص ہیڈرز
-CLOUD_API_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "*/*",
-    "X-deviceid": "web-ff039175658859f46aa02723b12ad9df", # HAR سے لیا گیا
-    "Origin": "https://cloud.jazzdrive.com.pk",
-    "Referer": "https://cloud.jazzdrive.com.pk/",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin"
-}
-
-# --- Data Models ---
-class PhoneRequest(BaseModel):
-    phone: str
-    session_id: str
-
-class VerifyRequest(BaseModel):
-    otp: str
-    session_id: str
-    verify_url: str
-    cookies: dict  # ہم کوکیز فرنٹ اینڈ سے واپس لیں گے تاکہ سیشن ضائع نہ ہو
-
-# --- HTML UI ---
-HTML_TEMPLATE = """
+# ==========================================
+# HTML TEMPLATE
+# ==========================================
+HTML_CODE = """
 <!DOCTYPE html>
-<html>
+<html lang="ur" dir="rtl">
 <head>
-    <title>Jazz Drive Final API</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jazz Drive Automation (Railway)</title>
     <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; }
-        .panel { background: #161b22; border: 1px solid #30363d; padding: 20px; margin-bottom: 20px; border-radius: 6px; }
-        input { background: #0d1117; border: 1px solid #30363d; color: #fff; padding: 10px; width: 60%; }
-        button { background: #238636; color: white; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; }
-        #terminal { background: #000; border: 2px solid #3fb950; height: 500px; overflow-y: scroll; padding: 15px; color: #0f0; white-space: pre-wrap; }
-        .req { color: #58a6ff; } .res { color: #d29922; }
+        body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { text-align: center; color: #00ff00; }
+        .control-panel { background: #2d2d2d; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #444; }
+        input { width: 100%; padding: 10px; margin: 10px 0; background: #444; border: 1px solid #666; color: #fff; border-radius: 5px; font-size: 16px; }
+        button { width: 100%; padding: 12px; background: #007bff; border: none; color: white; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold; margin-top: 5px;}
+        button:hover { background: #0056b3; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        
+        #terminal { 
+            background-color: #000; 
+            border: 2px solid #00ff00; 
+            padding: 15px; 
+            height: 400px; 
+            overflow-y: scroll; 
+            white-space: pre-wrap; 
+            font-size: 14px; 
+            border-radius: 5px;
+            box-shadow: 0 0 15px rgba(0, 255, 0, 0.2);
+        }
+        .log-line { margin: 2px 0; border-bottom: 1px solid #333; padding-bottom: 2px; }
+        .log-info { color: #00ffff; }
+        .log-success { color: #00ff00; }
+        .log-error { color: #ff4444; }
+        .log-header { color: #ffff00; font-size: 12px; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🚀 Jazz Drive: Cloud to Label API</h2>
+        <h1>Jazz Drive Automation (Railway)</h1>
         
-        <div id="step1" class="panel">
-            <p>1. Enter Number (Browser Load -> API Send):</p>
-            <input type="text" id="phone" value="03027665767">
-            <button onclick="startFlow()">Start</button>
+        <div class="control-panel">
+            <label>موبائل نمبر (0300...):</label>
+            <input type="text" id="phone_number" placeholder="030XXXXXXX">
+            
+            <button id="startBtn" onclick="startProcess()">اسٹارٹ (Start)</button>
+            
+            <div id="otpSection" class="hidden">
+                <label>OTP کوڈ درج کریں:</label>
+                <input type="text" id="otp_code" placeholder="1234">
+                <button id="verifyBtn" onclick="verifyOtp()">ویریفائی (Verify)</button>
+            </div>
         </div>
 
-        <div id="step2" class="panel hidden">
-            <p>2. Enter OTP (Full API Chain):</p>
-            <input type="text" id="otp" placeholder="1234">
-            <button onclick="verifyFlow()">Verify & Fetch Data</button>
-        </div>
-
-        <div id="terminal">Waiting...</div>
+        <label>ٹرمینل ویو (Logs):</label>
+        <div id="terminal"></div>
     </div>
 
     <script>
-        let sessionKey = "sess_" + Date.now();
         let verifyUrl = "";
-        let savedCookies = {};
-        let pollInterval = null;
+        // Device ID کو اگلے سٹیپ میں پاس کرنے کے لیے محفوظ کریں گے
+        let currentDeviceId = ""; 
 
-        async function startFlow() {
-            const phone = document.getElementById('phone').value;
-            document.getElementById('step1').querySelector('button').disabled = true;
-            document.getElementById('terminal').innerHTML = "Initializing Browser for Cookie Warmup...\n";
-            startPolling();
-
-            try {
-                const res = await fetch('/api/start-flow', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({phone: phone, session_id: sessionKey})
-                });
-                const data = await res.json();
-                if(data.status === 'success') {
-                    verifyUrl = data.verify_url;
-                    savedCookies = data.cookies;
-                    document.getElementById('step1').classList.add('hidden');
-                    document.getElementById('step2').classList.remove('hidden');
-                } else {
-                    alert("Error: " + data.message);
-                    document.getElementById('step1').querySelector('button').disabled = false;
-                }
-            } catch(e) { alert(e); }
+        function log(msg, type='info') {
+            const term = document.getElementById('terminal');
+            const line = document.createElement('div');
+            line.className = 'log-line log-' + type;
+            line.innerHTML = msg;
+            term.appendChild(line);
+            term.scrollTop = term.scrollHeight;
         }
 
-        async function verifyFlow() {
-            const otp = document.getElementById('otp').value;
-            document.getElementById('step2').querySelector('button').disabled = true;
-            
-            try {
-                const res = await fetch('/api/verify-chain', {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        otp: otp, session_id: sessionKey, 
-                        verify_url: verifyUrl, cookies: savedCookies
-                    })
-                });
-                const data = await res.json();
-                // Final Result is logged in terminal via polling
-            } catch(e) { alert(e); }
+        async function startProcess() {
+            const phone = document.getElementById('phone_number').value;
+            if(!phone) { alert("نمبر لکھیں!"); return; }
+
+            document.getElementById('startBtn').disabled = true;
+            log(">>> سسٹم اسٹارٹ ہو رہا ہے...", 'info');
+
+            const response = await fetch(`/stream_step1?phone=${phone}`);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                const text = decoder.decode(value);
+                const lines = text.split('\\n');
+                
+                for (const line of lines) {
+                    if (line.startsWith('DATA:')) {
+                        try {
+                            const data = JSON.parse(line.replace('DATA:', ''));
+                            if (data.type === 'log') {
+                                log(data.message, data.style);
+                            } else if (data.type === 'otp_needed') {
+                                log(">>> OTP بھیج دیا گیا ہے۔ برائے مہربانی کوڈ درج کریں۔", 'success');
+                                document.getElementById('otpSection').classList.remove('hidden');
+                                verifyUrl = data.verify_url;
+                                currentDeviceId = data.device_id; // Save generated device ID
+                            } else if (data.type === 'error') {
+                                log("ERROR: " + data.message, 'error');
+                                document.getElementById('startBtn').disabled = false;
+                            }
+                        } catch (e) {}
+                    }
+                }
+            }
         }
 
-        function startPolling() {
-            pollInterval = setInterval(async () => {
-                const res = await fetch('/api/get-logs?id=' + sessionKey);
-                const data = await res.json();
-                if(data.logs) {
-                    const t = document.getElementById('terminal');
-                    t.innerHTML = data.logs;
-                    t.scrollTop = t.scrollHeight;
+        async function verifyOtp() {
+            const otp = document.getElementById('otp_code').value;
+            if(!otp) { alert("OTP لکھیں!"); return; }
+
+            document.getElementById('verifyBtn').disabled = true;
+            log(">>> OTP ویریفائی کیا جا رہا ہے...", 'info');
+
+            // Device ID بھی ساتھ بھیج رہے ہیں تاکہ سیشن برقرار رہے
+            const response = await fetch(`/stream_step2?otp=${otp}&verify_url=${encodeURIComponent(verifyUrl)}&device_id=${encodeURIComponent(currentDeviceId)}`);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                const text = decoder.decode(value);
+                const lines = text.split('\\n');
+                
+                for (const line of lines) {
+                    if (line.startsWith('DATA:')) {
+                        try {
+                            const data = JSON.parse(line.replace('DATA:', ''));
+                            if (data.type === 'log') {
+                                log(data.message, data.style);
+                            } else if (data.type === 'finished') {
+                                log(">>> تمام پروسیس مکمل ہو گیا ہے۔", 'success');
+                            }
+                        } catch (e) {}
+                    }
                 }
-            }, 1000);
+            }
         }
     </script>
 </body>
 </html>
 """
 
-@app.get("/")
-def home(): return HTMLResponse(HTML_TEMPLATE)
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
 
-def log(sid, title, method, url, status, detail):
-    if sid not in logs_db: logs_db[sid] = ""
-    logs_db[sid] += f"\n🔹 <b>{title}</b>\n<span class='req'>➡️ {method} {url}</span>\n<span class='res'>⬅️ Status: {status}</span>\n{detail}\n----------------------------------\n"
+# Random Device ID Generator
+def get_random_device_id():
+    # Format: web-<32 hex chars>
+    random_hex = uuid.uuid4().hex
+    return f"web-{random_hex}"
 
-# --- 1. START FLOW (Browser -> API) ---
-@app.post("/api/start-flow")
-def start_flow_api(data: PhoneRequest):
-    sid = data.session_id
+def send_log(message, style='info'):
+    return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
+
+# Global Session (ہر یوزر کے لیے نیا سیشن بننا چاہیے لیکن سادگی کے لیے یہاں ایک استعمال ہو رہا ہے)
+# ریلوے پر ملٹی یوزر کے لیے آپ کو سیشن ہینڈلنگ بہتر کرنی ہوگی، فی الحال یہ ایک وقت میں ایک بندے کے لیے ہے۔
+session = requests.Session()
+
+common_headers = {
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36',
+    'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
+    'sec-ch-ua-mobile': '?1',
+    'sec-ch-ua-platform': '"Android"',
+    'Upgrade-Insecure-Requests': '1'
+}
+session.headers.update(common_headers)
+
+# ==========================================
+# STEP 1: SELENIUM -> FIND ID -> OTP API
+# ==========================================
+def process_step_1(phone_number):
     try:
-        signup_url = None
-        browser_cookies = {}
+        # 1. Device ID Logic
+        device_id = None
+        
+        yield send_log("1. Selenium Browser (Railway Mode) Start کیا جا رہا ہے...")
+        
+        # Railway Compatible Chrome Options
+        chrome_options = Options()
+        chrome_options.add_argument("--headless=new") # New Headless mode
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage") # Crucial for Docker/Railway
+        chrome_options.add_argument(f"user-agent={common_headers['User-Agent']}")
+        
+        # ChromeDriver Install/Run
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+        
+        target_url = "https://cloud.jazzdrive.com.pk"
+        yield send_log(f"2. URL اوپن کیا جا رہا ہے: {target_url}")
+        
+        driver.get(target_url)
+        
+        found_id = False
+        signup_url = ""
+        max_retries = 20
+        
+        yield send_log("3. ری ڈائریکٹس ٹریک کیے جا رہے ہیں...")
+        
+        for i in range(max_retries):
+            current_url = driver.current_url
+            # yield send_log(f"   ⟳ Current URL: {current_url}", 'header')
+            
+            # چیک کریں کہ کیا کوکیز میں ڈیوائس آئی ڈی آئی ہے؟
+            cookies = driver.get_cookies()
+            for cookie in cookies:
+                if 'device' in cookie['name'].lower() or 'deviceid' in cookie['name'].lower():
+                    device_id = cookie['value']
+                    yield send_log(f"✔ Device ID Found in Cookies: {device_id}", 'success')
+            
+            if "signup.php" in current_url and "id=" in current_url:
+                signup_url = current_url
+                found_id = True
+                yield send_log("✔ سائن اپ آئی ڈی مل گئی!", 'success')
+                break
+            
+            time.sleep(1)
+        
+        # اگر ڈیوائس آئی ڈی نہیں ملی تو رینڈم جنریٹ کریں
+        if not device_id:
+            device_id = get_random_device_id()
+            yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
+        
+        # کوکیز ٹرانسفر
+        yield send_log("4. سیشن کوکیز منتقل کی جا رہی ہیں...")
+        for cookie in driver.get_cookies():
+            session.cookies.set(cookie['name'], cookie['value'])
+            
+        driver.quit()
+        
+        if not found_id:
+            yield f"DATA:{json.dumps({'type': 'error', 'message': 'سائن اپ لنک نہیں ملا۔'})}\n"
+            return
 
-        # A. Browser Step: Load Cloud Page to get valid Redirect & Cookies
-        log(sid, "1. Browser Warmup", "BROWSER", "https://cloud.jazzdrive.com.pk", "Loading...", "Waiting for redirect to signup.php...")
+        # 2. Signup / OTP Request using Signup ID
+        # سائن اپ آئی ڈی `signup_url` کے اندر ہی موجود ہے، اس لیے ہم اسی URL پر POST کریں گے
+        yield send_log(f"5. API Call: OTP بھیجا جا رہا ہے...")
+        yield send_log(f"   URL: {signup_url}", 'header')
         
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            context = browser.new_context(user_agent=COMMON_HEADERS["User-Agent"])
-            page = context.new_page()
-            
-            page.goto("https://cloud.jazzdrive.com.pk", timeout=60000)
-            
-            try:
-                # Wait for redirect to signup.php
-                page.wait_for_url("**signup.php**", timeout=45000)
-                signup_url = page.url
-                
-                # Extract Cookies
-                for c in context.cookies():
-                    browser_cookies[c['name']] = c['value']
-                
-                log(sid, "1. Browser Success", "INFO", signup_url, "OK", f"Extracted {len(browser_cookies)} Cookies")
-            except Exception as e:
-                browser.close()
-                log(sid, "Browser Error", "FAIL", "", "Timeout", str(e))
-                return {"status": "fail", "message": "Browser failed to reach signup"}
-            
-            browser.close()
-
-        # B. API Step: Send OTP (using Browser Cookies)
-        if not signup_url: return {"status": "fail"}
+        payload = {'enrichment_status': '', 'msisdn': phone_number}
         
-        session = requests.Session()
-        session.cookies.update(browser_cookies)
+        # allow_redirects=True تاکہ یہ verify.php پر خود چلا جائے
+        resp = session.post(signup_url, data=payload, allow_redirects=True)
         
-        payload = {"enrichment_status": "", "msisdn": data.phone}
-        headers = COMMON_HEADERS.copy()
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Referer"] = signup_url # Very Important!
-        headers["Origin"] = "https://jazzdrive.com.pk"
+        verify_url = resp.url
+        yield send_log(f"   Status Code: {resp.status_code}")
         
-        log(sid, "2. Sending SMS (API)", "POST", signup_url, "Sending...", f"Payload: {payload}")
-        r = session.post(signup_url, data=payload, headers=headers, allow_redirects=False)
-        
-        log(sid, "2. SMS Response", "INFO", "Status", str(r.status_code), f"Location: {r.headers.get('Location')}")
-        
-        if r.status_code == 302 and 'Location' in r.headers:
-            return {
-                "status": "success", 
-                "verify_url": r.headers['Location'],
-                "cookies": session.cookies.get_dict() # Return updated cookies
-            }
+        if "verify.php" in verify_url:
+            yield send_log(f"✔ کامیابی سے Verify پیج پر پہنچ گئے: {verify_url}", 'success')
+            # بھیجیں Verify URL اور Device ID فرنٹ اینڈ کو
+            yield f"DATA:{json.dumps({'type': 'otp_needed', 'verify_url': verify_url, 'device_id': device_id})}\n"
         else:
-            return {"status": "fail", "message": "SMS Sending Failed"}
+            yield send_log(f"❌ غلط ری ڈائریکٹ: {verify_url}", 'error')
+            yield f"DATA:{json.dumps({'type': 'error', 'message': 'OTP Page پر نہیں جا سکا۔'})}\n"
 
     except Exception as e:
-        log(sid, "System Error", "ERROR", str(e), "500", "")
-        return {"status": "error", "message": str(e)}
+        yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
-
-# --- 2. VERIFY CHAIN (API Only) ---
-@app.post("/api/verify-chain")
-def verify_chain_api(data: VerifyRequest):
-    sid = data.session_id
+# ==========================================
+# STEP 2: VERIFY -> TOKEN -> LABELS
+# ==========================================
+def process_step_2(otp, verify_url, device_id):
     try:
-        session = requests.Session()
-        session.cookies.update(data.cookies)
+        # ہیڈرز میں ڈیوائس آئی ڈی سیٹ کریں (User Requirement)
+        session.headers['X-deviceid'] = device_id
         
-        # A. Verify OTP
-        headers = COMMON_HEADERS.copy()
-        headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Referer"] = data.verify_url
-        headers["Origin"] = "https://jazzdrive.com.pk"
+        yield send_log(f"6. API Call: OTP ویریفائی کر رہے ہیں...")
+        yield send_log(f"   Device ID: {device_id}", 'header')
         
-        log(sid, "3. Verifying OTP", "POST", data.verify_url, "Sending...", f"Code: {data.otp}")
-        r1 = session.post(data.verify_url, data={"otp": data.otp}, headers=headers, allow_redirects=False)
-        log(sid, "3. Verify Result", "INFO", str(r1.status_code), r1.reason, f"Location: {r1.headers.get('Location')}")
+        payload = {'otp': otp}
+        resp = session.post(verify_url, data=payload, allow_redirects=True)
         
-        if r1.status_code != 302: return {"status": "fail", "message": "Invalid OTP"}
+        final_url = resp.url
+        yield send_log(f"   Final Redirect: {final_url}", 'header')
         
-        # B. Authorize Redirect
-        auth_url = r1.headers['Location']
-        if auth_url.startswith("/"): auth_url = "https://jazzdrive.com.pk" + auth_url
+        # Extract Code
+        parsed = urlparse(final_url)
+        qs = parse_qs(parsed.query)
         
-        log(sid, "4. Authorization", "GET", auth_url, "Sending...", "")
-        r2 = session.get(auth_url, headers=COMMON_HEADERS, allow_redirects=False)
+        if 'code' not in qs:
+             yield f"DATA:{json.dumps({'type': 'error', 'message': 'Code نہیں ملا۔ OTP ایکسپائر یا غلط ہے۔'})}\n"
+             return
+             
+        auth_code = qs['code'][0]
+        yield send_log(f"✔ Auth Code: {auth_code}", 'success')
         
-        cloud_redirect = r2.headers.get('Location')
-        if not cloud_redirect: return {"status": "fail", "message": "Auth Failed"}
+        # SAPI LOGIN
+        yield send_log("7. ٹوکن جنریٹ کیا جا رہا ہے...")
+        sapi_url = "https://cloud.jazzdrive.com.pk/sapi/login/oauth"
+        params = {
+            'action': 'login', 'platform': 'web', 
+            'keytype': 'authorizationcode', 'key': auth_code
+        }
         
-        # C. Get OAuth Code (from Cloud URL)
-        log(sid, "5. Cloud Redirect", "GET", cloud_redirect, "Found", "")
-        parsed = parse_qs(urlparse(cloud_redirect).query)
-        oauth_code = parsed.get('code', [None])[0]
+        headers = session.headers.copy()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
         
-        if not oauth_code: return {"status": "fail", "message": "No Code Found"}
+        resp_login = session.get(sapi_url, params=params, headers=headers)
         
-        # D. Login / Exchange Token (sapi/login/oauth)
-        login_api = f"https://cloud.jazzdrive.com.pk/sapi/login/oauth?action=login&platform=web&keytype=authorizationcode&key={oauth_code}"
-        log(sid, "6. Exchanging Token", "GET", login_api, "Sending...", "")
-        
-        r3 = session.get(login_api, headers=CLOUD_API_HEADERS)
-        login_data = r3.json()
-        
-        val_key = login_data.get("data", {}).get("validationkey")
-        if not val_key:
-            log(sid, "Login Failed", "ERROR", "", "", str(login_data))
-            return {"status": "fail"}
-            
-        log(sid, "Login Success", "INFO", "ValidationKey Found", "OK", val_key)
+        try:
+            login_json = resp_login.json()
+        except:
+            yield send_log("Login JSON Error: " + resp_login.text, 'error')
+            return
 
-        # E. FINAL STEP: Get Labels (sapi/label)
-        final_url = f"https://cloud.jazzdrive.com.pk/sapi/label?action=get&limit=100&shared_items=true&validationkey={val_key}"
-        payload = {"data":{"types":["file"],"origin":["omh","shared_label"]}}
-        
-        # Update headers specifically for this POST request
-        final_headers = CLOUD_API_HEADERS.copy()
-        final_headers["Content-Type"] = "application/json;charset=UTF-8"
-        
-        log(sid, "7. Fetching Labels (Final)", "POST", final_url, "Sending...", json.dumps(payload))
-        
-        r4 = session.post(final_url, json=payload, headers=final_headers)
-        
-        # PRINT FINAL RESPONSE
-        log(sid, "🎉 FINAL RESPONSE", "SUCCESS", "200 OK", "JSON Data:", json.dumps(r4.json(), indent=2))
-        
-        return {"status": "success", "data": r4.json()}
+        if 'data' in login_json and 'validationkey' in login_json['data']:
+            val_key = login_json['data']['validationkey']
+            yield send_log(f"✔ Validation Key: {val_key}", 'success')
+            
+            # FINAL CALL
+            yield send_log("8. ڈیٹا Fetch کیا جا رہا ہے (Labels)...")
+            label_url = "https://cloud.jazzdrive.com.pk/sapi/label"
+            l_params = {
+                'action': 'get', 'limit': '100', 
+                'shared_items': 'true', 'validationkey': val_key
+            }
+            l_json = {"data": {"types": ["file"], "origin": ["omh", "shared_label"]}}
+            
+            headers['Content-Type'] = 'application/json;charset=UTF-8'
+            headers['Origin'] = 'https://cloud.jazzdrive.com.pk'
+            
+            resp_final = session.post(label_url, params=l_params, json=l_json['data'], headers=headers)
+            
+            yield send_log("---------------- RESPONSE ----------------", 'header')
+            yield send_log(resp_final.text, 'info')
+            yield f"DATA:{json.dumps({'type': 'finished'})}\n"
+            
+        else:
+            yield send_log("Login Failed: " + str(login_json), 'error')
 
     except Exception as e:
-        log(sid, "CRITICAL ERROR", str(e), "FAIL", "", "")
-        return {"status": "error", "message": str(e)}
+        yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
-@app.get("/api/get-logs")
-def logs_api(id: str): return {"logs": logs_db.get(id, "")}
+# ==========================================
+# FLASK ROUTES
+# ==========================================
+@app.route('/')
+def index():
+    return render_template_string(HTML_CODE)
 
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+@app.route('/stream_step1')
+def stream_step1():
+    phone = request.args.get('phone')
+    return Response(stream_with_context(process_step_1(phone)), mimetype='text/plain')
+
+@app.route('/stream_step2')
+def stream_step2():
+    otp = request.args.get('otp')
+    verify_url = request.args.get('verify_url')
+    device_id = request.args.get('device_id')
+    return Response(stream_with_context(process_step_2(otp, verify_url, device_id)), mimetype='text/plain')
+
+if __name__ == '__main__':
+    # Railway PORT Configuration
+    port = int(os.environ.get("PORT", 5000))
+    # 0.0.0.0 is required for Railway
+    app.run(host='0.0.0.0', port=port)
