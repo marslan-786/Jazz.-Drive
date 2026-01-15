@@ -75,7 +75,6 @@ HTML_CODE = """
 
     <script>
         let verifyUrl = "";
-        // Device ID کو اگلے سٹیپ میں پاس کرنے کے لیے محفوظ کریں گے
         let currentDeviceId = ""; 
 
         function log(msg, type='info') {
@@ -115,7 +114,7 @@ HTML_CODE = """
                                 log(">>> OTP بھیج دیا گیا ہے۔ برائے مہربانی کوڈ درج کریں۔", 'success');
                                 document.getElementById('otpSection').classList.remove('hidden');
                                 verifyUrl = data.verify_url;
-                                currentDeviceId = data.device_id; // Save generated device ID
+                                currentDeviceId = data.device_id; 
                             } else if (data.type === 'error') {
                                 log("ERROR: " + data.message, 'error');
                                 document.getElementById('startBtn').disabled = false;
@@ -133,7 +132,6 @@ HTML_CODE = """
             document.getElementById('verifyBtn').disabled = true;
             log(">>> OTP ویریفائی کیا جا رہا ہے...", 'info');
 
-            // Device ID بھی ساتھ بھیج رہے ہیں تاکہ سیشن برقرار رہے
             const response = await fetch(`/stream_step2?otp=${otp}&verify_url=${encodeURIComponent(verifyUrl)}&device_id=${encodeURIComponent(currentDeviceId)}`);
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -165,20 +163,17 @@ HTML_CODE = """
 """
 
 # ==========================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS & GLOBAL CONFIG
 # ==========================================
 
-# Random Device ID Generator
 def get_random_device_id():
-    # Format: web-<32 hex chars>
     random_hex = uuid.uuid4().hex
     return f"web-{random_hex}"
 
 def send_log(message, style='info'):
     return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
 
-# Global Session (ہر یوزر کے لیے نیا سیشن بننا چاہیے لیکن سادگی کے لیے یہاں ایک استعمال ہو رہا ہے)
-# ریلوے پر ملٹی یوزر کے لیے آپ کو سیشن ہینڈلنگ بہتر کرنی ہوگی، فی الحال یہ ایک وقت میں ایک بندے کے لیے ہے۔
+# Global Session
 session = requests.Session()
 
 common_headers = {
@@ -195,19 +190,16 @@ session.headers.update(common_headers)
 # ==========================================
 def process_step_1(phone_number):
     try:
-        # 1. Device ID Logic
         device_id = None
         
         yield send_log("1. Selenium Browser (Railway Mode) Start کیا جا رہا ہے...")
         
-        # Railway Compatible Chrome Options
         chrome_options = Options()
-        chrome_options.add_argument("--headless=new") # New Headless mode
+        chrome_options.add_argument("--headless=new") 
         chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage") # Crucial for Docker/Railway
+        chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument(f"user-agent={common_headers['User-Agent']}")
         
-        # ChromeDriver Install/Run
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         
         target_url = "https://cloud.jazzdrive.com.pk"
@@ -223,9 +215,7 @@ def process_step_1(phone_number):
         
         for i in range(max_retries):
             current_url = driver.current_url
-            # yield send_log(f"   ⟳ Current URL: {current_url}", 'header')
             
-            # چیک کریں کہ کیا کوکیز میں ڈیوائس آئی ڈی آئی ہے؟
             cookies = driver.get_cookies()
             for cookie in cookies:
                 if 'device' in cookie['name'].lower() or 'deviceid' in cookie['name'].lower():
@@ -240,12 +230,10 @@ def process_step_1(phone_number):
             
             time.sleep(1)
         
-        # اگر ڈیوائس آئی ڈی نہیں ملی تو رینڈم جنریٹ کریں
         if not device_id:
             device_id = get_random_device_id()
             yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
         
-        # کوکیز ٹرانسفر
         yield send_log("4. سیشن کوکیز منتقل کی جا رہی ہیں...")
         for cookie in driver.get_cookies():
             session.cookies.set(cookie['name'], cookie['value'])
@@ -256,14 +244,11 @@ def process_step_1(phone_number):
             yield f"DATA:{json.dumps({'type': 'error', 'message': 'سائن اپ لنک نہیں ملا۔'})}\n"
             return
 
-        # 2. Signup / OTP Request using Signup ID
-        # سائن اپ آئی ڈی `signup_url` کے اندر ہی موجود ہے، اس لیے ہم اسی URL پر POST کریں گے
         yield send_log(f"5. API Call: OTP بھیجا جا رہا ہے...")
         yield send_log(f"   URL: {signup_url}", 'header')
         
         payload = {'enrichment_status': '', 'msisdn': phone_number}
         
-        # allow_redirects=True تاکہ یہ verify.php پر خود چلا جائے
         resp = session.post(signup_url, data=payload, allow_redirects=True)
         
         verify_url = resp.url
@@ -271,7 +256,6 @@ def process_step_1(phone_number):
         
         if "verify.php" in verify_url:
             yield send_log(f"✔ کامیابی سے Verify پیج پر پہنچ گئے: {verify_url}", 'success')
-            # بھیجیں Verify URL اور Device ID فرنٹ اینڈ کو
             yield f"DATA:{json.dumps({'type': 'otp_needed', 'verify_url': verify_url, 'device_id': device_id})}\n"
         else:
             yield send_log(f"❌ غلط ری ڈائریکٹ: {verify_url}", 'error')
@@ -281,11 +265,10 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> TOKEN -> LABELS
+# STEP 2: VERIFY -> TOKEN -> LABELS (FIXED)
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
-        # ہیڈرز میں ڈیوائس آئی ڈی سیٹ کریں (User Requirement)
         session.headers['X-deviceid'] = device_id
         
         yield send_log(f"6. API Call: OTP ویریفائی کر رہے ہیں...")
@@ -295,9 +278,9 @@ def process_step_2(otp, verify_url, device_id):
         resp = session.post(verify_url, data=payload, allow_redirects=True)
         
         final_url = resp.url
+        yield send_log(f"   Status: {resp.status_code}")
         yield send_log(f"   Final Redirect: {final_url}", 'header')
         
-        # Extract Code
         parsed = urlparse(final_url)
         qs = parse_qs(parsed.query)
         
@@ -308,7 +291,6 @@ def process_step_2(otp, verify_url, device_id):
         auth_code = qs['code'][0]
         yield send_log(f"✔ Auth Code: {auth_code}", 'success')
         
-        # SAPI LOGIN
         yield send_log("7. ٹوکن جنریٹ کیا جا رہا ہے...")
         sapi_url = "https://cloud.jazzdrive.com.pk/sapi/login/oauth"
         params = {
@@ -329,9 +311,14 @@ def process_step_2(otp, verify_url, device_id):
 
         if 'data' in login_json and 'validationkey' in login_json['data']:
             val_key = login_json['data']['validationkey']
+            
+            # --- COOKIE FIX ---
+            session.cookies.set('validationKey', val_key)
+            if 'jsessionid' in login_json['data']:
+                 session.cookies.set('JSESSIONID', login_json['data']['jsessionid'])
+
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
             
-            # FINAL CALL
             yield send_log("8. ڈیٹا Fetch کیا جا رہا ہے (Labels)...")
             label_url = "https://cloud.jazzdrive.com.pk/sapi/label"
             l_params = {
@@ -375,7 +362,5 @@ def stream_step2():
     return Response(stream_with_context(process_step_2(otp, verify_url, device_id)), mimetype='text/plain')
 
 if __name__ == '__main__':
-    # Railway PORT Configuration
     port = int(os.environ.get("PORT", 5000))
-    # 0.0.0.0 is required for Railway
     app.run(host='0.0.0.0', port=port)
