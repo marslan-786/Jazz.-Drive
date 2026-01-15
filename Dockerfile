@@ -1,15 +1,20 @@
-# 1. مائیکروسافٹ کا آفیشل Playwright امیج استعمال کریں (اس میں سب کچھ انسٹال ہے)
-FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy
+# 1. ہم لیٹسٹ (Latest) امیج استعمال کریں گے تاکہ ورژن کا مسئلہ نہ آئے
+FROM mcr.microsoft.com/playwright/python:v1.49.0-jammy
 
 # 2. ورکنگ ڈائریکٹری سیٹ کریں
 WORKDIR /app
 
-# 3. ریکوائرمنٹس فائل کاپی کریں اور انسٹال کریں
+# 3. لائبریریز انسٹال کریں
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. باقی سارا کوڈ کاپی کریں
+# 4. احتیاطاً براؤزر دوبارہ انسٹال کریں (یہ سب سے اہم سٹیپ ہے)
+# یہ لائن اس بات کو یقینی بنائے گی کہ براؤزر ہر حال میں موجود ہو
+RUN playwright install chromium
+RUN playwright install-deps
+
+# 5. کوڈ کاپی کریں
 COPY . .
 
-# 5. یہ وہ کمانڈ ہے جو سرور چلائے گا
+# 6. سرور چلائیں
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
