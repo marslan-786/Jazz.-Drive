@@ -248,87 +248,128 @@ async def send_otp_api(req: NumberRequest):
 @app.post("/api/verify-otp")
 async def verify_otp_api(req: OtpRequest):
     """
-    Step 2: Verify OTP via API (NO CLICKING) -> Follow Redirect via Browser -> Get Cookies
+    Step 2: Full Browser Verification (Smart Button Detection)
     """
     try:
-        print(f"--- [Step 2] Verifying OTP: {req.otp} ---")
+        print(f"--- [Step 2] Browser Verification for: {req.otp} ---")
         
-        # 1. API Verification (No Browser Click)
-        verify_url = f"https://jazzdrive.com.pk/verify.php?id={req.session_id}"
-        session = requests.Session()
-        
-        print(f"API: POST to {verify_url}")
-        # allow_redirects=False تاکہ ہم 302 پکڑ سکیں
-        resp = session.post(verify_url, data={"otp": req.otp}, headers=HEADERS, allow_redirects=False)
-        
-        target_url = ""
-        
-        if resp.status_code == 302:
-            target_url = resp.headers.get("Location")
-            print(f"API: OTP Accepted! Redirecting to: {target_url}")
-        else:
-            # کبھی کبھی 200 آتا ہے اگر OTP غلط ہو
-            return {"status": "fail", "message": f"Invalid OTP (Status {resp.status_code})", "debug": resp.text[:200]}
-            
-        if not target_url:
-             return {"status": "fail", "message": "No redirect URL found after verification"}
-
-        # 2. Browser Follow-up (Passive)
-        # اب ہم براؤزر کو صرف کہیں گے کہ اس لنک پر جاؤ (authorize.php) اور جو بھی آگے ہو اسے ہونے دو
         cookies_dict = {}
-        
-        print("browser: Launching to follow redirect chain...")
+        found_key = False
+
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+            # براؤزر لانچ کریں
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox"]
+            )
             context = await browser.new_context(user_agent=HEADERS["User-Agent"])
             page = await context.new_page()
 
             try:
-                # اگر URL ریلیٹو (Relative) ہے تو پورا کریں
-                if target_url.startswith("/"):
-                    target_url = "https://jazzdrive.com.pk" + target_url
+                # 1. Verify Page پر جائیں
+                verify_url = f"https://jazzdrive.com.pk/verify.php?id={req.session_id}"
+                print(f"browser: Opening {verify_url}")
                 
-                print(f"browser: Going to {target_url}")
-                await page.goto(target_url, timeout=60000)
+                await page.goto(verify_url, timeout=60000)
+                await page.wait_for_load_state("networkidle")
+
+                # 2. OTP فیلڈ تلاش کریں اور کوڈ لکھیں
+                # عام طور پر نام 'otp' ہوتا ہے
+                print("browser: Typing OTP...")
+                try:
+                    await page.fill('input[name="otp"]', req.otp)
+                except:
+                    # اگر نام سے نہ ملے تو پہلی ان پٹ فیلڈ میں لکھ دیں
+                    await page.fill('input[type="text"]', req.otp)
+
+                # 3. بٹن دبانے کی کوشش (Smart Logic)
+                print("browser: Attempting to Submit Form...")
                 
-                print("browser: Waiting for Cloud Dashboard...")
-                # کامیاب لاگ ان پر یہ cloud.jazzdrive.com.pk پر جائے گا
+                # طریقہ 1: سیدھا Enter دبائیں (سب سے بہترین)
+                try:
+                    print("Action: Pressing ENTER key")
+                    await page.keyboard.press('Enter')
+                except Exception as e:
+                    print(f"Enter key failed: {e}")
+
+                # تھوڑا انتظار کریں کہ شاید Enter سے کام ہو گیا ہو
+                try:
+                    await page.wait_for_url("https://cloud.jazzdrive.com.pk/**", timeout=5000)
+                    print("Login Successful via Enter Key!")
+                except:
+                    # طریقہ 2: اگر Enter سے نہیں ہوا تو بٹن تلاش کریں
+                    print("Enter didn't work. Searching for Buttons...")
+                    
+                    button_selectors = [
+                        'button:has-text("Login")',      # بٹن جس پر Login لکھا ہو
+                        'button:has-text("Verify")',     # بٹن جس پر Verify لکھا ہو
+                        'button:has-text("Submit")',     # بٹن جس پر Submit لکھا ہو
+                        'input[type="submit"]',          # ان پٹ بٹن
+                        'button[type="submit"]',         # ٹائپ سبمٹ
+                        'button'                         # کوئی بھی بٹن
+                    ]
+                    
+                    clicked = False
+                    for selector in button_selectors:
+                        try:
+                            if await page.locator(selector).count() > 0:
+                                print(f"Found button via selector: {selector}")
+                                await page.click(selector, timeout=2000)
+                                clicked = True
+                                break
+                        except:
+                            continue
+                    
+                    if not clicked:
+                        print("Warning: Could not find any clickable button, waiting anyway...")
+
+                # 4. ڈیش بورڈ کا انتظار (Cloud URL)
+                print("browser: Waiting for Redirect to Cloud Dashboard...")
                 await page.wait_for_url("https://cloud.jazzdrive.com.pk/**", timeout=60000)
-                print(f"browser: Reached {page.url}")
-                
-                # کوکیز اٹھائیں
+                print(f"browser: Landed on {page.url}")
+
+                # 5. کوکیز نکالیں
                 cookies = await context.cookies()
                 for c in cookies:
                     cookies_dict[c['name']] = c['value']
                 
-                # Validation Key URL سے نکالیں (Backup)
+                # Validation Key چیک کریں (URL یا Cookies میں)
+                # کبھی کبھی URL میں ہوتی ہے
                 if "validationkey=" in page.url.lower():
                     from urllib.parse import urlparse, parse_qs
                     parsed = parse_qs(urlparse(page.url).query)
-                    # Case-insensitive search
                     for k, v in parsed.items():
                         if k.lower() == 'validationkey':
                             cookies_dict['validationKey'] = v[0]
+                            found_key = True
+                
+                # Cookies میں چیک کریں
+                if not found_key:
+                    for k, v in cookies_dict.items():
+                        if k.lower() == 'validationkey':
+                            found_key = True
 
             except Exception as e:
-                print(f"Browser Error during redirect: {e}")
+                print(f"Browser Step Error: {e}")
+                # ایرر کے وقت پیج کا ٹائٹل پرنٹ کریں تاکہ پتہ چلے کہاں پھنسے
+                try:
+                    print(f"Current Page Title: {await page.title()}")
+                except: pass
+
             finally:
                 await browser.close()
 
-        # Check Results
-        # یا تو JSESSIONID ہو یا validationKey
-        v_key = cookies_dict.get('validationKey') or cookies_dict.get('validationkey')
-        
-        if v_key:
-            print(f"SUCCESS: Found Validation Key: {v_key}")
+        if found_key:
             return {"status": "success", "auth_data": cookies_dict}
         else:
-            print("FAIL: Login seemed successful but Cookies/Keys missing.")
-            return {"status": "fail", "message": "Login OK but failed to capture Keys", "debug": str(cookies_dict)}
+            return {
+                "status": "fail", 
+                "message": "Login successful (redirected) but Validation Key not found.", 
+                "debug": str(cookies_dict)
+            }
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
-
 
 @app.post("/api/upload")
 async def upload_file_api(file: UploadFile = File(...), cookies_json: str = Form(...)):
