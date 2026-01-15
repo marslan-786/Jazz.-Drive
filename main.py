@@ -5,7 +5,6 @@ import uuid
 import os
 import io
 import datetime
-import mimetypes
 from flask import Flask, Response, request, render_template_string, stream_with_context
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -24,7 +23,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive Auto (Timeout Fix)</title>
+    <title>Jazz Drive - Curl Replicated</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -51,13 +50,12 @@ HTML_CODE = """
         .log-success { color: #00ff00; }
         .log-error { color: #ff4444; }
         .log-header { color: #ffff00; font-size: 12px; }
-        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Auto (Timeout Fix)</h1>
+        <h1>Jazz Drive Automation</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -176,15 +174,14 @@ def get_random_device_id():
 def send_log(message, style='info'):
     return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
 
-def get_test_file(file_type='image'):
-    if file_type == 'image':
-        content = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
-        return content, f"test_{int(time.time())}.jpg", "image/jpeg"
-    return None, None, None
+def get_test_image():
+    # 1x1 Pixel JPEG
+    return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
 
 # Global Session
 session = requests.Session()
 
+# Common headers (without Content-Type, as requests adds it for multipart)
 common_headers = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
     'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
@@ -243,8 +240,6 @@ def process_step_1(phone_number):
             device_id = get_random_device_id()
             yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
         
-        # کوکیز صاف کر کے دوبارہ سیٹ کریں
-        session.cookies.clear()
         for cookie in driver.get_cookies():
             session.cookies.set(cookie['name'], cookie['value'])
             
@@ -256,35 +251,24 @@ def process_step_1(phone_number):
 
         yield send_log(f"5. API Call: OTP بھیجا جا رہا ہے...")
         
-        # --- FIXED HERE: Added Timeout and Headers ---
-        session.headers['Referer'] = target_url # Referer for safety
-        
         payload = {'enrichment_status': '', 'msisdn': phone_number}
+        resp = session.post(signup_url, data=payload, allow_redirects=True)
+        verify_url = resp.url
         
-        try:
-            # Timeout added to prevent infinite hanging
-            resp = session.post(signup_url, data=payload, allow_redirects=True, timeout=45)
-            verify_url = resp.url
-            
-            yield send_log(f"   Status Code: {resp.status_code}")
-            
-            if "verify.php" in verify_url:
-                yield send_log(f"✔ کامیابی سے Verify پیج پر پہنچ گئے", 'success')
-                yield f"DATA:{json.dumps({'type': 'otp_needed', 'verify_url': verify_url, 'device_id': device_id})}\n"
-            else:
-                yield send_log(f"❌ غلط ری ڈائریکٹ: {verify_url}", 'error')
-                yield f"DATA:{json.dumps({'type': 'error', 'message': 'OTP Page پر نہیں جا سکا۔'})}\n"
-                
-        except requests.Timeout:
-            yield f"DATA:{json.dumps({'type': 'error', 'message': 'OTP Request Timed out (سرور جواب نہیں دے رہا)'})}\n"
-        except Exception as err:
-            yield f"DATA:{json.dumps({'type': 'error', 'message': str(err)})}\n"
+        yield send_log(f"   Status Code: {resp.status_code}")
+        
+        if "verify.php" in verify_url:
+            yield send_log(f"✔ کامیابی سے Verify پیج پر پہنچ گئے", 'success')
+            yield f"DATA:{json.dumps({'type': 'otp_needed', 'verify_url': verify_url, 'device_id': device_id})}\n"
+        else:
+            yield send_log(f"❌ غلط ری ڈائریکٹ: {verify_url}", 'error')
+            yield f"DATA:{json.dumps({'type': 'error', 'message': 'OTP Page پر نہیں جا سکا۔'})}\n"
 
     except Exception as e:
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> UPLOAD -> SHARE
+# STEP 2: VERIFY -> TOKEN -> UPLOAD (FIXED FOR CURL)
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
@@ -293,7 +277,7 @@ def process_step_2(otp, verify_url, device_id):
         yield send_log(f"6. API Call: OTP ویریفائی کر رہے ہیں...")
         
         payload = {'otp': otp}
-        resp = session.post(verify_url, data=payload, allow_redirects=True, timeout=45)
+        resp = session.post(verify_url, data=payload, allow_redirects=True)
         
         final_url = resp.url
         yield send_log(f"   Status: {resp.status_code}")
@@ -316,9 +300,11 @@ def process_step_2(otp, verify_url, device_id):
             'keytype': 'authorizationcode', 'key': auth_code
         }
         
-        session.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+        # Login needs standard form encoded header
+        headers = session.headers.copy()
+        headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
         
-        resp_login = session.get(sapi_url, params=params, timeout=45)
+        resp_login = session.get(sapi_url, params=params, headers=headers)
         
         try:
             login_json = resp_login.json()
@@ -332,33 +318,33 @@ def process_step_2(otp, verify_url, device_id):
             
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
             
-            # --- SESSION UPDATE (Crucial) ---
-            session.cookies.set('validationKey', val_key)
-            if new_jsession:
-                session.cookies.set('JSESSIONID', new_jsession)
+            # --- HEADERS CONSTRUCTION ---
+            cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
-            session.cookies.set('analyticsEnabled', 'true')
-            session.cookies.set('cookiesWithPreferencesAccepted', 'true')
-            session.cookies.set('cookiesAnalyticsAccepted', 'true')
-
-            # Clean headers
-            session.headers['Origin'] = 'https://cloud.jazzdrive.com.pk'
-            session.headers['Referer'] = 'https://cloud.jazzdrive.com.pk/'
-            if 'Content-Type' in session.headers:
-                del session.headers['Content-Type']
+            base_headers = {
+                'Host': 'cloud.jazzdrive.com.pk',
+                'Connection': 'keep-alive',
+                'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+                'sec-ch-ua-platform': '"Linux"',
+                'sec-ch-ua-mobile': '?0',
+                'User-Agent': common_headers['User-Agent'],
+                'X-deviceid': device_id,
+                'Accept': '*/*',
+                'Origin': 'https://cloud.jazzdrive.com.pk',
+                'Referer': 'https://cloud.jazzdrive.com.pk/',
+                'Cookie': cookie_string
+                # Note: Content-Type is NOT set here for upload, requests will do it
+            }
 
             # 7.5 Warmup
             yield send_log("7.5. سیشن Warm-up...", 'info')
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
+                         params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
+                         params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
             
-            session.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
-                         params={'action': 'get', 'validationkey': val_key}, timeout=45)
-                         
-            session.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
-                         params={'action': 'get', 'validationkey': val_key}, timeout=45)
-            
-            # 8. UPLOAD FILE
-            file_content, filename, mime_type = get_test_file('image')
-            yield send_log(f"8. فائل اپلوڈ کی جا رہی ہے ({mime_type})...", 'header')
+            # 8. UPLOAD (EXACTLY MATCHING CURL)
+            yield send_log("8. فائل اپلوڈ ٹیسٹ شروع (Matching CURL)...", 'header')
             upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
             
             upload_params = {
@@ -367,73 +353,44 @@ def process_step_2(otp, verify_url, device_id):
                 'validationkey': val_key
             }
             
+            image_bytes = get_test_image()
+            filename = f"test_{int(time.time())}.jpg"
+            
+            # JSON Payload like CURL -F 'data={...}'
+            now_iso = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             metadata_struct = {
-                "name": filename,
-                "size": len(file_content),
-                "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
-                "contenttype": mime_type
+                "data": {
+                    "name": filename,
+                    "size": len(image_bytes),
+                    "modificationdate": now_iso,
+                    "contenttype": "image/jpeg"
+                }
             }
+            
+            # --- THE FIX: Pass EVERYTHING as 'files' ---
+            # This forces 'requests' to create a multipart body with two parts:
+            # 1. name="data" -> JSON string
+            # 2. name="file" -> Binary file with filename and content-type
             
             multipart_payload = {
-                'data': (None, json.dumps(metadata_struct)), 
-                'file': (filename, file_content, mime_type)
+                'data': (None, json.dumps(metadata_struct)), # This matches -F 'data=...'
+                'file': (filename, image_bytes, 'image/jpeg') # This matches -F 'file=@...'
             }
 
-            # Timeout added here too
-            resp_upload = session.post(
+            resp_upload = requests.post(
                 upload_url, 
                 params=upload_params, 
-                files=multipart_payload,
-                timeout=120 # Uploads take longer
+                files=multipart_payload, 
+                headers=base_headers
             )
             
-            uploaded_file_id = None
+            yield send_log("---------------- UPLOAD RESPONSE ----------------", 'header')
+            yield send_log(resp_upload.text, 'info')
+            
             if '"success":"Media uploaded successfully"' in resp_upload.text:
-                 yield send_log("✅ فائل اپلوڈ کامیاب!", 'success')
-                 try:
-                     up_json = resp_upload.json()
-                     uploaded_file_id = up_json.get('id')
-                     yield send_log(f"   File ID: {uploaded_file_id}", 'info')
-                 except: pass
+                 yield send_log("✅ مبارک ہو! فائل کامیابی سے اپلوڈ ہو گئی۔", 'success')
             else:
-                 yield send_log("⚠️ اپلوڈ میں مسئلہ ہے: " + resp_upload.text, 'error')
-                 return
-
-            # 9. CREATE SHARE LINK
-            if uploaded_file_id:
-                yield send_log("9. پبلک لنک جنریٹ کیا جا رہا ہے...", 'header')
-                share_url = "https://cloud.jazzdrive.com.pk/sapi/media/set"
-                
-                share_params = {
-                    'action': 'save',
-                    'validationkey': val_key
-                }
-                
-                share_payload = {
-                    "data": {
-                        "set": {
-                            "items": [uploaded_file_id]
-                        }
-                    }
-                }
-                
-                resp_share = session.post(
-                    share_url,
-                    params=share_params,
-                    json=share_payload['data'],
-                    timeout=45
-                )
-                
-                try:
-                    share_json = resp_share.json()
-                    public_url = share_json.get('url')
-                    if public_url:
-                        yield send_log("🎉 کامیابی! آپ کا پبلک لنک تیار ہے:", 'success')
-                        yield send_log(f"<a href='{public_url}' target='_blank' class='log-link'>{public_url}</a>", 'success')
-                    else:
-                        yield send_log(" لنک نہیں ملا۔ رسپانس چیک کریں:" + resp_share.text, 'error')
-                except:
-                    yield send_log("Share Response Error: " + resp_share.text, 'error')
+                 yield send_log("⚠️ اپلوڈ میں مسئلہ ہے، رسپانس چیک کریں۔", 'error')
             
             yield f"DATA:{json.dumps({'type': 'finished'})}\n"
             
