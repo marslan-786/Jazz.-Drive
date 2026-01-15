@@ -23,7 +23,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive Upload Test</title>
+    <title>Jazz Drive Upload Fix</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -55,7 +55,7 @@ HTML_CODE = """
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Upload Test</h1>
+        <h1>Jazz Drive Upload Fix</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -176,7 +176,6 @@ def send_log(message, style='info'):
 
 # A minimal valid JPEG image (1x1 pixel) for testing upload
 def get_test_image():
-    # This is a byte string of a valid tiny JPEG
     return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
 
 # Global Session
@@ -271,7 +270,7 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> TOKEN -> UPLOAD (TEST)
+# STEP 2: VERIFY -> TOKEN -> UPLOAD (FIXED)
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
@@ -295,7 +294,6 @@ def process_step_2(otp, verify_url, device_id):
         auth_code = qs['code'][0]
         yield send_log(f"✔ Auth Code: {auth_code}", 'success')
         
-        # SAPI LOGIN
         yield send_log("7. ٹوکن جنریٹ کیا جا رہا ہے (Login)...")
         sapi_url = "https://cloud.jazzdrive.com.pk/sapi/login/oauth"
         params = {
@@ -321,8 +319,7 @@ def process_step_2(otp, verify_url, device_id):
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
             yield send_log(f"✔ New Session ID: {new_jsession}", 'info')
             
-            # --- CONSTRUCT HEADERS (Based on LOGS) ---
-            # اہم: کوکیز بالکل ویسی ہی جیسے لاگ میں ہیں
+            # --- HEADERS ---
             cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
             base_headers = {
@@ -339,23 +336,15 @@ def process_step_2(otp, verify_url, device_id):
                 'Cookie': cookie_string
             }
 
-            # ---------------------------------------------------------
-            # STEP 7.5: WARM-UP (Fetch Profile & System Info)
-            # ---------------------------------------------------------
-            yield send_log("7.5. سیشن Warm-up (System Info & Profile)...", 'info')
+            # 7.5 Warmup
+            yield send_log("7.5. سیشن Warm-up...", 'info')
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
+                         params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
+                         params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
             
-            # Call System Info
-            sys_info_url = "https://cloud.jazzdrive.com.pk/sapi/system/information"
-            requests.get(sys_info_url, params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
-            
-            # Call Profile (اہم ترین)
-            profile_url = "https://cloud.jazzdrive.com.pk/sapi/profile"
-            requests.get(profile_url, params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
-            
-            # ---------------------------------------------------------
-            # STEP 8: UPLOAD FILE (As per Log)
-            # ---------------------------------------------------------
-            yield send_log("8. فائل اپلوڈ ٹیسٹ شروع...", 'header')
+            # 8. UPLOAD (FIXED)
+            yield send_log("8. فائل اپلوڈ ٹیسٹ شروع (Correct Data Field)...", 'header')
             upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
             
             upload_params = {
@@ -364,51 +353,37 @@ def process_step_2(otp, verify_url, device_id):
                 'validationkey': val_key
             }
             
-            # 1. Test Image Byte Data
             image_bytes = get_test_image()
             filename = f"test_{int(time.time())}.jpg"
             
-            # 2. JSON Metadata (جیسا کہ لاگ میں تھا)
-            # نوٹ: لاگ میں یہ ملٹی پارٹ کے اندر الگ حصہ بن کر جا رہا ہے یا باڈی میں
-            # Requests کے ساتھ ہم اسے 'files' ڈکشنری میں ڈال کر بھیج سکتے ہیں
-            metadata = {
-                "data": {
-                    "name": filename,
-                    "size": len(image_bytes),
-                    "modificationdate": "20260115T180000Z",
-                    "contenttype": "image/jpeg"
-                }
-            }
-            
-            # Multipart Payload Construction
-            # Jazz Drive seems to accept multipart where the JSON is a separate part named 'json' or similar
-            # Based on the log, it's mixed. We'll try the standard way first.
-            
-            files_payload = {
+            # --- FIX HERE: Separate Files and Data ---
+            # 'file' key for the binary
+            multipart_files = {
                 'file': (filename, image_bytes, 'image/jpeg')
             }
             
-            # لاگ کے مطابق باڈی میں JSON بھی ہے، اسے ہم 'data' فیلڈ میں ڈالنے کی کوشش کرتے ہیں
-            # یا پھر raw body construct کرتے ہیں۔
-            # لاگ میں: <binary> پھر { "data": ... }
-            # requests اس کو ہینڈل کرنے کے لیے data={} اور files={} دونوں لیتا ہے۔
-            
-            upload_headers = base_headers.copy()
-            # Content-Type ہٹا دیں تاکہ requests خود multipart boundary لگا سکے
-            
-            # اہم: لاگ میں JSON ڈیٹا ملٹی پارٹ کا حصہ نہیں لگ رہا تھا بلکہ binary کے فوراً بعد تھا
-            # لیکن standard multipart میں یہ fields ہوتے ہیں۔
-            # ہم اسے 'json' فیلڈ میں بھیج کر دیکھتے ہیں جو عام طور پر Funambol میں ہوتا ہے۔
+            # 'data' key for the JSON string (THIS IS WHAT COM-1013 WAS MISSING)
+            metadata_struct = {
+                "name": filename,
+                "size": len(image_bytes),
+                "modificationdate": "20260115T180000Z",
+                "contenttype": "image/jpeg"
+            }
             
             multipart_data = {
-                'file': (filename, image_bytes, 'image/jpeg'),
-                'json': (None, json.dumps(metadata), 'application/json') 
+                'data': json.dumps(metadata_struct)
             }
+            
+            # Header copy WITHOUT Content-Type (requests adds boundary)
+            upload_headers = base_headers.copy()
+            if 'Content-Type' in upload_headers:
+                del upload_headers['Content-Type']
 
             resp_upload = requests.post(
                 upload_url, 
                 params=upload_params, 
-                files=multipart_data, 
+                files=multipart_files, # File binary here
+                data=multipart_data,   # JSON 'data' field here
                 headers=upload_headers
             )
             
