@@ -35,4 +35,4 @@ ENV DISPLAY=:99
 ENV PYTHONUNBUFFERED=1
 
 # 8. Run Command
-CMD ["gunicorn", "main:app", "-b", "0.0.0.0:$PORT", "--timeout", "120"]
+CMD ["gunicorn", "main:app", "-b", "0.0.0.0:8080", "--timeout", "120"]
