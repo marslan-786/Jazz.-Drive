@@ -16,7 +16,7 @@ from urllib.parse import urlparse, parse_qs
 app = Flask(__name__)
 
 # ==========================================
-# HTML TEMPLATE (With File Input)
+# HTML TEMPLATE (Frontend)
 # ==========================================
 HTML_CODE = """
 <!DOCTYPE html>
@@ -30,8 +30,7 @@ HTML_CODE = """
         .container { max-width: 800px; margin: 0 auto; }
         h1 { text-align: center; color: #00ff00; }
         .control-panel { background: #2d2d2d; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #444; }
-        input { width: 100%; padding: 10px; margin: 10px 0; background: #444; border: 1px solid #666; color: #fff; border-radius: 5px; font-size: 16px; }
-        input[type="file"] { padding: 5px; background: #333; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 10px; margin: 10px 0; background: #444; border: 1px solid #666; color: #fff; border-radius: 5px; font-size: 16px; }
         button { width: 100%; padding: 12px; background: #007bff; border: none; color: white; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold; margin-top: 5px;}
         button:hover { background: #0056b3; }
         button:disabled { background: #555; cursor: not-allowed; }
@@ -40,10 +39,10 @@ HTML_CODE = """
             background-color: #000; 
             border: 2px solid #00ff00; 
             padding: 15px; 
-            height: 400px; 
+            height: 500px; 
             overflow-y: scroll; 
             white-space: pre-wrap; 
-            font-size: 14px; 
+            font-size: 13px; 
             border-radius: 5px;
             box-shadow: 0 0 15px rgba(0, 255, 0, 0.2);
         }
@@ -51,31 +50,33 @@ HTML_CODE = """
         .log-info { color: #00ffff; }
         .log-success { color: #00ff00; }
         .log-error { color: #ff4444; }
-        .log-header { color: #ffff00; font-size: 12px; font-weight: bold; margin-top: 10px; display: block; }
-        .log-link { color: #00ff00; font-weight: bold; text-decoration: underline; font-size: 16px; }
+        .log-raw { color: #ff00ff; font-size: 11px; } 
+        .log-header { color: #ffff00; font-size: 14px; font-weight: bold; margin-top: 15px; display: block; border-bottom: 1px dashed #ffff00; }
+        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; word-break: break-all; font-size: 16px; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Custom Upload</h1>
+        <h1>Jazz Drive Custom Uploader</h1>
         
         <div class="control-panel">
-            <label>موبائل نمبر (0300...):</label>
-            <input type="text" id="phone_number" placeholder="030XXXXXXX">
-            
-            <button id="startBtn" onclick="startProcess()">اسٹارٹ (Start)</button>
+            <div id="step1">
+                <label>موبائل نمبر (0300...):</label>
+                <input type="text" id="phone_number" placeholder="030XXXXXXX">
+                <button id="startBtn" onclick="startProcess()">اسٹارٹ (Start)</button>
+            </div>
             
             <div id="otpSection" class="hidden">
-                <hr style="border-color: #555;">
-                <label>فائل منتخب کریں (Optional):</label>
-                <input type="file" id="userFile">
-                <small style="color: #aaa;">اگر فائل نہیں چنیں گے تو آٹو ٹیسٹ امیج اپلوڈ ہوگی۔</small>
-                
-                <br><br>
                 <label>OTP کوڈ درج کریں:</label>
                 <input type="text" id="otp_code" placeholder="1234">
                 <button id="verifyBtn" onclick="verifyOtp()">ویریفائی (Verify)</button>
+            </div>
+
+            <div id="uploadSection" class="hidden">
+                <label style="color: #00ff00; font-weight:bold;">فائل منتخب کریں (Image, Video, Zip):</label>
+                <input type="file" id="userFile">
+                <button id="uploadBtn" onclick="uploadUserFile()">اپلوڈ اور شیئر (Upload & Share)</button>
             </div>
         </div>
 
@@ -84,8 +85,10 @@ HTML_CODE = """
     </div>
 
     <script>
+        // Global variables to store session data
         let verifyUrl = "";
         let currentDeviceId = ""; 
+        let authSession = {}; // Stores validationKey and cookies
 
         function log(msg, type='info') {
             const term = document.getElementById('terminal');
@@ -104,64 +107,41 @@ HTML_CODE = """
             log(">>> سسٹم اسٹارٹ ہو رہا ہے...", 'info');
 
             const response = await fetch(`/stream_step1?phone=${phone}`);
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                const text = decoder.decode(value);
-                const lines = text.split('\\n');
-                
-                for (const line of lines) {
-                    if (line.startsWith('DATA:')) {
-                        try {
-                            const data = JSON.parse(line.replace('DATA:', ''));
-                            if (data.type === 'log') {
-                                log(data.message, data.style);
-                            } else if (data.type === 'otp_needed') {
-                                log(">>> OTP بھیج دیا گیا ہے۔ برائے مہربانی کوڈ اور فائل درج کریں۔", 'success');
-                                document.getElementById('otpSection').classList.remove('hidden');
-                                verifyUrl = data.verify_url;
-                                currentDeviceId = data.device_id; 
-                            } else if (data.type === 'error') {
-                                log("ERROR: " + data.message, 'error');
-                                document.getElementById('startBtn').disabled = false;
-                            }
-                        } catch (e) {}
-                    }
-                }
-            }
+            readStream(response);
         }
 
         async function verifyOtp() {
             const otp = document.getElementById('otp_code').value;
-            const fileInput = document.getElementById('userFile');
-            
             if(!otp) { alert("OTP لکھیں!"); return; }
 
             document.getElementById('verifyBtn').disabled = true;
-            log(">>> OTP اور فائل بھیجی جا رہی ہے...", 'info');
+            log(">>> OTP ویریفائی اور لاگ ان کیا جا رہا ہے...", 'info');
 
-            // Use FormData for File Upload
+            const response = await fetch(`/stream_step2?otp=${otp}&verify_url=${encodeURIComponent(verifyUrl)}&device_id=${encodeURIComponent(currentDeviceId)}`);
+            readStream(response);
+        }
+
+        async function uploadUserFile() {
+            const fileInput = document.getElementById('userFile');
+            if(fileInput.files.length === 0) { alert("کوئی فائل منتخب نہیں کی!"); return; }
+
+            document.getElementById('uploadBtn').disabled = true;
+            log(">>> فائل اپلوڈ شروع ہو رہی ہے...", 'info');
+
             const formData = new FormData();
-            formData.append('otp', otp);
-            formData.append('verify_url', verifyUrl);
-            formData.append('device_id', currentDeviceId);
-            
-            if (fileInput.files.length > 0) {
-                formData.append('file', fileInput.files[0]);
-                log("فائل: " + fileInput.files[0].name + " اپلوڈ ہو رہی ہے...", 'info');
-            } else {
-                log("کوئی فائل نہیں چنی گئی، ڈیفالٹ ٹیسٹ امیج استعمال ہوگی۔", 'info');
-            }
+            formData.append('file', fileInput.files[0]);
+            formData.append('validationKey', authSession.validationKey);
+            formData.append('cookieString', authSession.cookieString);
+            formData.append('deviceId', currentDeviceId);
 
-            const response = await fetch('/stream_step2', {
+            const response = await fetch('/stream_upload', {
                 method: 'POST',
                 body: formData
             });
-            
+            readStream(response);
+        }
+
+        async function readStream(response) {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
@@ -176,10 +156,30 @@ HTML_CODE = """
                     if (line.startsWith('DATA:')) {
                         try {
                             const data = JSON.parse(line.replace('DATA:', ''));
+                            
                             if (data.type === 'log') {
                                 log(data.message, data.style);
-                            } else if (data.type === 'finished') {
-                                log(">>> تمام پروسیس مکمل ہو گیا ہے۔", 'success');
+                            } 
+                            else if (data.type === 'otp_needed') {
+                                log(">>> OTP بھیج دیا گیا ہے۔", 'success');
+                                document.getElementById('otpSection').classList.remove('hidden');
+                                verifyUrl = data.verify_url;
+                                currentDeviceId = data.device_id; 
+                            } 
+                            else if (data.type === 'auth_success') {
+                                log(">>> لاگ ان کامیاب! اب فائل سلیکٹ کریں۔", 'success');
+                                // Store tokens for next step
+                                authSession = {
+                                    validationKey: data.validationKey,
+                                    cookieString: data.cookieString
+                                };
+                                document.getElementById('uploadSection').classList.remove('hidden');
+                                document.getElementById('otpSection').classList.add('hidden');
+                            }
+                            else if (data.type === 'error') {
+                                log("ERROR: " + data.message, 'error');
+                                // Re-enable buttons if needed
+                                if(document.getElementById('startBtn').disabled) document.getElementById('startBtn').disabled = false;
                             }
                         } catch (e) {}
                     }
@@ -202,19 +202,14 @@ def get_random_device_id():
 def send_log(message, style='info'):
     return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
 
-def get_default_test_image():
-    # 1x1 Pixel JPEG
-    content = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
-    return content, f"test_{int(time.time())}.jpg", "image/jpeg"
-
 # Global Session
 session = requests.Session()
 
 common_headers = {
-    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
     'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Linux"',
+    'sec-ch-ua-platform': '"Windows"',
     'Upgrade-Insecure-Requests': '1'
 }
 session.headers.update(common_headers)
@@ -226,7 +221,7 @@ def process_step_1(phone_number):
     try:
         device_id = None
         
-        yield send_log("1. Selenium Browser (Railway Mode) Start کیا جا رہا ہے...")
+        yield send_log("1. Selenium Browser Start...", 'info')
         
         chrome_options = Options()
         chrome_options.add_argument("--headless=new") 
@@ -237,15 +232,13 @@ def process_step_1(phone_number):
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         
         target_url = "https://cloud.jazzdrive.com.pk"
-        yield send_log(f"2. URL اوپن کیا جا رہا ہے: {target_url}")
-        
         driver.get(target_url)
         
         found_id = False
         signup_url = ""
         max_retries = 20
         
-        yield send_log("3. ری ڈائریکٹس ٹریک کیے جا رہے ہیں...")
+        yield send_log("2. ٹریکنگ کوکیز & ID...", 'info')
         
         for i in range(max_retries):
             current_url = driver.current_url
@@ -254,20 +247,19 @@ def process_step_1(phone_number):
             for cookie in cookies:
                 if 'device' in cookie['name'].lower() or 'deviceid' in cookie['name'].lower():
                     device_id = cookie['value']
-                    yield send_log(f"✔ Device ID Found: {device_id}", 'success')
             
             if "signup.php" in current_url and "id=" in current_url:
                 signup_url = current_url
                 found_id = True
-                yield send_log("✔ سائن اپ آئی ڈی مل گئی!", 'success')
+                yield send_log("✔ سائن اپ لنک مل گیا۔", 'success')
                 break
             
             time.sleep(1)
         
         if not device_id:
             device_id = get_random_device_id()
-            yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
         
+        # Sync cookies
         for cookie in driver.get_cookies():
             session.cookies.set(cookie['name'], cookie['value'])
             
@@ -277,7 +269,7 @@ def process_step_1(phone_number):
             yield f"DATA:{json.dumps({'type': 'error', 'message': 'سائن اپ لنک نہیں ملا۔'})}\n"
             return
 
-        yield send_log(f"5. API Call: OTP بھیجا جا رہا ہے...")
+        yield send_log(f"3. OTP بھیجا جا رہا ہے...", 'info')
         
         session.headers['Referer'] = target_url
         payload = {'enrichment_status': '', 'msisdn': phone_number}
@@ -286,10 +278,8 @@ def process_step_1(phone_number):
             resp = session.post(signup_url, data=payload, allow_redirects=True, timeout=45)
             verify_url = resp.url
             
-            yield send_log(f"   Status Code: {resp.status_code}")
-            
             if "verify.php" in verify_url:
-                yield send_log(f"✔ کامیابی سے Verify پیج پر پہنچ گئے", 'success')
+                yield send_log(f"✔ OTP سینڈ ہو گیا۔", 'success')
                 yield f"DATA:{json.dumps({'type': 'otp_needed', 'verify_url': verify_url, 'device_id': device_id})}\n"
             else:
                 yield send_log(f"❌ غلط ری ڈائریکٹ: {verify_url}", 'error')
@@ -301,32 +291,30 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> UPLOAD -> SHARE
+# STEP 2: VERIFY -> LOGIN ONLY (No Upload)
 # ==========================================
-def process_step_2(otp, verify_url, device_id, uploaded_file):
+def process_step_2_login(otp, verify_url, device_id):
     try:
         session.headers['X-deviceid'] = device_id
         
-        yield send_log(f"6. API Call: OTP ویریفائی کر رہے ہیں...")
+        yield send_log(f"4. OTP ویریفیکیشن...", 'info')
         
         payload = {'otp': otp}
         resp = session.post(verify_url, data=payload, allow_redirects=True, timeout=45)
         
         final_url = resp.url
-        yield send_log(f"   Status: {resp.status_code}")
-        
         parsed = urlparse(final_url)
         qs = parse_qs(parsed.query)
         
         if 'code' not in qs:
-             yield f"DATA:{json.dumps({'type': 'error', 'message': 'Code نہیں ملا۔ OTP ایکسپائر یا غلط ہے۔'})}\n"
+             yield f"DATA:{json.dumps({'type': 'error', 'message': 'غلط OTP یا سیشن ایکسپائر۔'})}\n"
              return
              
         auth_code = qs['code'][0]
-        yield send_log(f"✔ Auth Code: {auth_code}", 'success')
+        yield send_log(f"✔ Auth Code موصول: {auth_code}", 'success')
         
         # SAPI LOGIN
-        yield send_log("7. ٹوکن جنریٹ کیا جا رہا ہے (Login)...")
+        yield send_log("5. لاگ ان ٹوکن (Login SAPI)...", 'info')
         sapi_url = "https://cloud.jazzdrive.com.pk/sapi/login/oauth"
         params = {
             'action': 'login', 'platform': 'web', 
@@ -334,152 +322,154 @@ def process_step_2(otp, verify_url, device_id, uploaded_file):
         }
         
         session.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
-        
         resp_login = session.get(sapi_url, params=params, timeout=45)
         
-        try:
-            login_json = resp_login.json()
-        except:
-            yield send_log("Login JSON Error: " + resp_login.text, 'error')
-            return
+        login_json = resp_login.json()
 
         if 'data' in login_json and 'validationkey' in login_json['data']:
             val_key = login_json['data']['validationkey']
             new_jsession = login_json['data'].get('jsessionid')
             
-            yield send_log(f"✔ Validation Key: {val_key}", 'success')
+            yield send_log(f"✔ لاگ ان کامیاب (ValKey: {val_key[:10]}...)", 'success')
             
-            # --- MANUAL HEADERS CONSTRUCTION ---
             cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
-            manual_headers = {
-                'Host': 'cloud.jazzdrive.com.pk',
-                'Connection': 'keep-alive',
-                'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-                'sec-ch-ua-platform': '"Linux"',
-                'sec-ch-ua-mobile': '?0',
-                'User-Agent': common_headers['User-Agent'],
-                'X-deviceid': device_id,
-                'Accept': '*/*',
-                'Origin': 'https://cloud.jazzdrive.com.pk',
-                'Referer': 'https://cloud.jazzdrive.com.pk/',
-                'Cookie': cookie_string
-            }
-
-            # 7.5 Warmup
-            yield send_log("7.5. سیشن Warm-up...", 'info')
-            requests.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
-                         params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
-                         
-            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
-                         params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
-            
-            # 8. UPLOAD FILE
-            
-            # Handle user upload vs default
-            if uploaded_file:
-                filename = uploaded_file.filename
-                file_content = uploaded_file.read()
-                # Guess mime type based on extension
-                mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-                yield send_log(f"8. کسٹم فائل اپلوڈ ہو رہی ہے: {filename} ({mime_type})", 'header')
-            else:
-                file_content, filename, mime_type = get_default_test_image()
-                yield send_log(f"8. ڈیفالٹ ٹیسٹ فائل اپلوڈ ہو رہی ہے ({mime_type})...", 'header')
-
-            upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
-            
-            upload_params = {
-                'action': 'save',
-                'acceptasynchronous': 'true',
-                'validationkey': val_key
-            }
-            
-            metadata_struct = {
-                "data": {
-                    "name": filename,
-                    "size": len(file_content),
-                    "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
-                    "contenttype": mime_type
-                }
-            }
-            
-            multipart_payload = {
-                'data': (None, json.dumps(metadata_struct)), 
-                'file': (filename, file_content, mime_type)
-            }
-
-            resp_upload = requests.post(
-                upload_url, 
-                params=upload_params, 
-                files=multipart_payload,
-                headers=manual_headers, 
-                timeout=120
-            )
-            
-            uploaded_file_id = None
-            if '"success":"Media uploaded successfully"' in resp_upload.text:
-                 yield send_log("✅ فائل اپلوڈ کامیاب!", 'success')
-                 try:
-                     up_json = resp_upload.json()
-                     if 'data' in up_json and 'id' in up_json['data']:
-                         uploaded_file_id = up_json['data']['id']
-                     else:
-                         uploaded_file_id = up_json.get('id')
-                     yield send_log(f"   File ID: {uploaded_file_id}", 'info')
-                 except: pass
-            else:
-                 yield send_log("⚠️ اپلوڈ میں مسئلہ ہے: " + resp_upload.text, 'error')
-                 return
-
-            # 9. CREATE PUBLIC LINK (using /sapi/media/set based on user log)
-            if uploaded_file_id:
-                yield send_log("9. پبلک لنک جنریٹ کیا جا رہا ہے...", 'header')
-                share_url = "https://cloud.jazzdrive.com.pk/sapi/media/set" 
-                
-                share_params = {
-                    'action': 'save', 
-                    'validationkey': val_key
-                }
-                
-                share_payload = {
-                    "data": {
-                        "set": {
-                            "items": [uploaded_file_id]
-                        }
-                    }
-                }
-                
-                share_headers = manual_headers.copy()
-                share_headers['Content-Type'] = 'application/json;charset=UTF-8'
-                
-                resp_share = requests.post(
-                    share_url,
-                    params=share_params,
-                    json=share_payload['data'],
-                    headers=share_headers,
-                    timeout=45
-                )
-                
-                yield send_log("---------------- SHARE RESPONSE ----------------", 'header')
-                yield send_log(resp_share.text, 'info') # Raw response
-                
-                try:
-                    share_json = resp_share.json()
-                    public_url = share_json.get('url')
-                    
-                    if public_url:
-                        yield send_log("🎉 کامیابی! آپ کا پبلک لنک تیار ہے:", 'success')
-                        yield send_log(f"<a href='{public_url}' target='_blank' class='log-link'>{public_url}</a>", 'success')
-                    else:
-                        yield send_log(" لنک نہیں ملا۔ رسپانس چیک کریں۔", 'error')
-                except:
-                    yield send_log("Share JSON Error: " + resp_share.text, 'error')
-            
-            yield f"DATA:{json.dumps({'type': 'finished'})}\n"
+            # Send keys back to frontend
+            yield f"DATA:{json.dumps({'type': 'auth_success', 'validationKey': val_key, 'cookieString': cookie_string})}\n"
             
         else:
             yield send_log("Login Failed: " + str(login_json), 'error')
+
+    except Exception as e:
+        yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
+
+# ==========================================
+# STEP 3: CUSTOM UPLOAD HANDLER
+# ==========================================
+def process_custom_upload(file_storage, val_key, cookie_string, device_id):
+    try:
+        filename = file_storage.filename
+        content_type = file_storage.content_type
+        # Read file into memory (be careful with very large files on limited RAM)
+        file_bytes = file_storage.read()
+        file_size = len(file_bytes)
+        
+        yield send_log(f"----------------------------------------", 'header')
+        yield send_log(f"6. فائل پروسیسنگ شروع: {filename}", 'header')
+        yield send_log(f"   Size: {file_size} bytes | Type: {content_type}", 'info')
+
+        # Manual Headers Setup
+        manual_headers = {
+            'Host': 'cloud.jazzdrive.com.pk',
+            'Connection': 'keep-alive',
+            'User-Agent': common_headers['User-Agent'],
+            'X-deviceid': device_id,
+            'Accept': '*/*',
+            'Origin': 'https://cloud.jazzdrive.com.pk',
+            'Referer': 'https://cloud.jazzdrive.com.pk/',
+            'Cookie': cookie_string
+        }
+
+        # Warmup (Just to be safe)
+        requests.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
+                        params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
+
+        # UPLOAD
+        yield send_log(f"7. Jazz Drive پر اپلوڈ ہو رہا ہے...", 'info')
+        upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
+        upload_params = {'action': 'save', 'acceptasynchronous': 'true', 'validationkey': val_key}
+        
+        # Correct Metadata Structure
+        metadata_struct = {
+            "data": {  
+                "name": filename,
+                "size": file_size,
+                "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+                "contenttype": content_type
+            }
+        }
+        
+        multipart_payload = {
+            'data': (None, json.dumps(metadata_struct)), 
+            'file': (filename, file_bytes, content_type)
+        }
+
+        resp_upload = requests.post(
+            upload_url, 
+            params=upload_params, 
+            files=multipart_payload,
+            headers=manual_headers, 
+            timeout=300 # 5 min timeout for large files
+        )
+        
+        uploaded_file_id = None
+        if '"success":"Media uploaded successfully"' in resp_upload.text:
+                yield send_log("✅ فائل کامیابی سے اپلوڈ ہو گئی!", 'success')
+                try:
+                    up_json = resp_upload.json()
+                    if 'data' in up_json and 'id' in up_json['data']:
+                        uploaded_file_id = up_json['data']['id']
+                    else:
+                        uploaded_file_id = up_json.get('id')
+                    yield send_log(f"   File ID: {uploaded_file_id}", 'info')
+                except: pass
+        else:
+                yield send_log("⚠️ اپلوڈ فیلڈ: " + resp_upload.text, 'error')
+                return
+
+        # SHARE
+        if uploaded_file_id:
+            yield send_log("8. شیئر لنک جنریٹ ہو رہا ہے...", 'header')
+            share_url = "https://cloud.jazzdrive.com.pk/sapi/link" 
+            share_params = {'action': 'create', 'validationkey': val_key}
+            
+            share_payload = {
+                "data": {
+                    "itemid": uploaded_file_id,
+                    "permission": 20, 
+                    "password": ""
+                }
+            }
+            
+            share_headers = manual_headers.copy()
+            share_headers['Content-Type'] = 'application/json;charset=UTF-8'
+            
+            resp_share = requests.post(
+                share_url,
+                params=share_params,
+                json=share_payload, 
+                headers=share_headers,
+                timeout=45
+            )
+            
+            # --- RAW RESPONSE OUTPUT ---
+            yield send_log("---- ORIGINAL API RESPONSE (RAW) ----", 'header')
+            try:
+                # Pretty print JSON if possible
+                raw_json = json.dumps(resp_share.json(), indent=4, ensure_ascii=False)
+                yield send_log(raw_json, 'raw') # Using a special color style
+            except:
+                yield send_log(resp_share.text, 'raw')
+            yield send_log("-------------------------------------", 'header')
+            # ---------------------------
+
+            try:
+                share_json = resp_share.json()
+                public_url = None
+                
+                if 'data' in share_json and 'url' in share_json['data']:
+                    public_url = share_json['data']['url']
+                elif 'url' in share_json:
+                    public_url = share_json['url']
+                    
+                if public_url:
+                    yield send_log("🎉 FINAL LINK:", 'success')
+                    yield send_log(f"<a href='{public_url}' target='_blank' class='log-link'>{public_url}</a>", 'success')
+                else:
+                    yield send_log(" لنک نہیں ملا۔", 'error')
+            except: pass
+        
+        yield f"DATA:{json.dumps({'type': 'finished'})}\n"
 
     except Exception as e:
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
@@ -496,15 +486,24 @@ def stream_step1():
     phone = request.args.get('phone')
     return Response(stream_with_context(process_step_1(phone)), mimetype='text/plain')
 
-@app.route('/stream_step2', methods=['POST'])
+@app.route('/stream_step2')
 def stream_step2():
-    # Use form data for POST
-    otp = request.form.get('otp')
-    verify_url = request.form.get('verify_url')
-    device_id = request.form.get('device_id')
-    uploaded_file = request.files.get('file')
+    otp = request.args.get('otp')
+    verify_url = request.args.get('verify_url')
+    device_id = request.args.get('device_id')
+    return Response(stream_with_context(process_step_2_login(otp, verify_url, device_id)), mimetype='text/plain')
+
+@app.route('/stream_upload', methods=['POST'])
+def stream_upload():
+    if 'file' not in request.files:
+        return "No file part"
     
-    return Response(stream_with_context(process_step_2(otp, verify_url, device_id, uploaded_file)), mimetype='text/plain')
+    file = request.files['file']
+    val_key = request.form['validationKey']
+    cookie_string = request.form['cookieString']
+    device_id = request.form['deviceId']
+    
+    return Response(stream_with_context(process_custom_upload(file, val_key, cookie_string, device_id)), mimetype='text/plain')
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
