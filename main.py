@@ -10,11 +10,12 @@ from playwright.sync_api import sync_playwright
 
 app = FastAPI()
 
-# --- Database for Logs ---
+# --- Global Logs ---
 logs_db = {}
 
-# --- Browser-Like Headers for API Steps ---
-API_HEADERS = {
+# --- HAR File Headers (Desktop Mode) ---
+# یہ وہ ہیڈرز ہیں جو آپ کی HAR فائل میں پی سی کے لیے استعمال ہوئے
+COMMON_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
@@ -27,6 +28,18 @@ API_HEADERS = {
     "Sec-Fetch-User": "?1"
 }
 
+# کلاؤڈ API کے لیے خاص ہیڈرز
+CLOUD_API_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "X-deviceid": "web-ff039175658859f46aa02723b12ad9df", # HAR سے لیا گیا
+    "Origin": "https://cloud.jazzdrive.com.pk",
+    "Referer": "https://cloud.jazzdrive.com.pk/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin"
+}
+
 # --- Data Models ---
 class PhoneRequest(BaseModel):
     phone: str
@@ -36,62 +49,54 @@ class VerifyRequest(BaseModel):
     otp: str
     session_id: str
     verify_url: str
-    cookies: dict # کوکیز جو پہلے سٹیپ سے ملیں گی
+    cookies: dict  # ہم کوکیز فرنٹ اینڈ سے واپس لیں گے تاکہ سیشن ضائع نہ ہو
 
 # --- HTML UI ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="ur" dir="rtl">
+<html>
 <head>
-    <title>Jazz Drive Hybrid Login</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Jazz Drive Final API</title>
     <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; direction: ltr; }
+        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; }
         .container { max-width: 900px; margin: 0 auto; }
-        .input-box { background: #161b22; padding: 20px; border: 1px solid #30363d; border-radius: 6px; margin-bottom: 20px; }
+        .panel { background: #161b22; border: 1px solid #30363d; padding: 20px; margin-bottom: 20px; border-radius: 6px; }
         input { background: #0d1117; border: 1px solid #30363d; color: #fff; padding: 10px; width: 60%; }
         button { background: #238636; color: white; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; }
-        #terminal { background: #000; border: 2px solid #3fb950; height: 500px; overflow-y: scroll; padding: 15px; font-size: 12px; color: #0f0; white-space: pre-wrap; font-family: 'Courier New', monospace; }
-        .req-head { color: #58a6ff; font-weight: bold; }
-        .res-head { color: #d29922; font-weight: bold; }
-        .divider { border-bottom: 1px dashed #30363d; margin: 10px 0; }
+        #terminal { background: #000; border: 2px solid #3fb950; height: 500px; overflow-y: scroll; padding: 15px; color: #0f0; white-space: pre-wrap; }
+        .req { color: #58a6ff; } .res { color: #d29922; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🌐 Jazz Drive Hybrid (Browser + API)</h2>
+        <h2>🚀 Jazz Drive: Cloud to Label API</h2>
         
-        <div id="step1" class="input-box">
-            <p style="color:white">1. نمبر درج کریں (Browser will Fetch ID):</p>
+        <div id="step1" class="panel">
+            <p>1. Enter Number (Browser Load -> API Send):</p>
             <input type="text" id="phone" value="03027665767">
-            <button onclick="startProcess()">Start Flow</button>
+            <button onclick="startFlow()">Start</button>
         </div>
 
-        <div id="step2" class="input-box hidden">
-            <p style="color:white">2. OTP درج کریں (API verification):</p>
+        <div id="step2" class="panel hidden">
+            <p>2. Enter OTP (Full API Chain):</p>
             <input type="text" id="otp" placeholder="1234">
-            <button onclick="verifyProcess()">Verify Login</button>
+            <button onclick="verifyFlow()">Verify & Fetch Data</button>
         </div>
 
-        <div style="margin-bottom: 5px; text-align: right;">
-            <button onclick="copyLogs()" style="background: #1f6feb;">Copy Logs</button>
-        </div>
-        
-        <div id="terminal">System Ready...</div>
+        <div id="terminal">Waiting...</div>
     </div>
 
     <script>
         let sessionKey = "sess_" + Date.now();
-        let pollInterval = null;
         let verifyUrl = "";
-        let sessionCookies = {};
+        let savedCookies = {};
+        let pollInterval = null;
 
-        async function startProcess() {
+        async function startFlow() {
             const phone = document.getElementById('phone').value;
             document.getElementById('step1').querySelector('button').disabled = true;
-            document.getElementById('terminal').innerHTML = "Initializing Browser for Session Warmup...";
-            
+            document.getElementById('terminal').innerHTML = "Initializing Browser for Cookie Warmup...\n";
             startPolling();
 
             try {
@@ -100,54 +105,45 @@ HTML_TEMPLATE = """
                     body: JSON.stringify({phone: phone, session_id: sessionKey})
                 });
                 const data = await res.json();
-                
                 if(data.status === 'success') {
                     verifyUrl = data.verify_url;
-                    sessionCookies = data.cookies; // اہم: کوکیز محفوظ کر لیں
+                    savedCookies = data.cookies;
                     document.getElementById('step1').classList.add('hidden');
                     document.getElementById('step2').classList.remove('hidden');
                 } else {
-                    alert("Failed: " + data.message);
+                    alert("Error: " + data.message);
                     document.getElementById('step1').querySelector('button').disabled = false;
                 }
-            } catch(e) { alert("Error: " + e); }
+            } catch(e) { alert(e); }
         }
 
-        async function verifyProcess() {
+        async function verifyFlow() {
             const otp = document.getElementById('otp').value;
             document.getElementById('step2').querySelector('button').disabled = true;
-
+            
             try {
-                await fetch('/api/verify-otp', {
+                const res = await fetch('/api/verify-chain', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        otp: otp, 
-                        session_id: sessionKey, 
-                        verify_url: verifyUrl,
-                        cookies: sessionCookies
+                        otp: otp, session_id: sessionKey, 
+                        verify_url: verifyUrl, cookies: savedCookies
                     })
                 });
-            } catch(e) { alert("Error: " + e); }
+                const data = await res.json();
+                // Final Result is logged in terminal via polling
+            } catch(e) { alert(e); }
         }
 
         function startPolling() {
-            if(pollInterval) clearInterval(pollInterval);
             pollInterval = setInterval(async () => {
-                try {
-                    const res = await fetch('/api/get-logs?id=' + sessionKey);
-                    const data = await res.json();
-                    if(data.logs) {
-                        const term = document.getElementById('terminal');
-                        term.innerHTML = data.logs;
-                        term.scrollTop = term.scrollHeight;
-                    }
-                } catch(e) {}
+                const res = await fetch('/api/get-logs?id=' + sessionKey);
+                const data = await res.json();
+                if(data.logs) {
+                    const t = document.getElementById('terminal');
+                    t.innerHTML = data.logs;
+                    t.scrollTop = t.scrollHeight;
+                }
             }, 1000);
-        }
-
-        function copyLogs() {
-            navigator.clipboard.writeText(document.getElementById('terminal').innerText);
-            alert("Copied!");
         }
     </script>
 </body>
@@ -157,143 +153,150 @@ HTML_TEMPLATE = """
 @app.get("/")
 def home(): return HTMLResponse(HTML_TEMPLATE)
 
-def log(session_id, title, req_url, method, info_text):
-    if session_id not in logs_db: logs_db[session_id] = ""
-    entry = f"""
-<div class="divider"></div>
-<div class="info">🔹 <b>STEP: {title}</b></div>
-<div class="req-head">➡️ {method} {req_url}</div>
-<div class="info">{info_text}</div>
-"""
-    logs_db[session_id] += entry
+def log(sid, title, method, url, status, detail):
+    if sid not in logs_db: logs_db[sid] = ""
+    logs_db[sid] += f"\n🔹 <b>{title}</b>\n<span class='req'>➡️ {method} {url}</span>\n<span class='res'>⬅️ Status: {status}</span>\n{detail}\n----------------------------------\n"
 
-# --- HYBRID LOGIC ---
-
+# --- 1. START FLOW (Browser -> API) ---
 @app.post("/api/start-flow")
-def start_flow(data: PhoneRequest):
-    s_id = data.session_id
-    browser_cookies = {}
-    signup_url = None
-    
+def start_flow_api(data: PhoneRequest):
+    sid = data.session_id
     try:
-        # 1. BROWSER STEP: Open Cloud Link & Get ID
-        log(s_id, "1. Launching Browser", "https://cloud.jazzdrive.com.pk", "BROWSER", "Waiting for redirection to signup.php...")
+        signup_url = None
+        browser_cookies = {}
+
+        # A. Browser Step: Load Cloud Page to get valid Redirect & Cookies
+        log(sid, "1. Browser Warmup", "BROWSER", "https://cloud.jazzdrive.com.pk", "Loading...", "Waiting for redirect to signup.php...")
         
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
-            context = browser.new_context(user_agent=API_HEADERS["User-Agent"])
+            context = browser.new_context(user_agent=COMMON_HEADERS["User-Agent"])
             page = context.new_page()
             
-            # کلاؤڈ لنک کھولیں
             page.goto("https://cloud.jazzdrive.com.pk", timeout=60000)
             
-            # انتظار کریں کہ وہ signup.php پر لے جائے
             try:
+                # Wait for redirect to signup.php
                 page.wait_for_url("**signup.php**", timeout=45000)
                 signup_url = page.url
-                log(s_id, "1. Browser Success", signup_url, "INFO", "Landed on Signup Page via Redirect.")
                 
-                # کوکیز محفوظ کریں (یہ سب سے اہم ہے)
-                cookies_list = context.cookies()
-                for c in cookies_list:
+                # Extract Cookies
+                for c in context.cookies():
                     browser_cookies[c['name']] = c['value']
                 
-                log(s_id, "2. Cookies Extracted", "Internal", "INFO", f"Captured {len(browser_cookies)} cookies from browser session.")
-                
+                log(sid, "1. Browser Success", "INFO", signup_url, "OK", f"Extracted {len(browser_cookies)} Cookies")
             except Exception as e:
                 browser.close()
-                log(s_id, "ERROR", "Browser Timeout", "FAIL", str(e))
-                return {"status": "fail", "message": "Browser failed to reach signup page"}
+                log(sid, "Browser Error", "FAIL", "", "Timeout", str(e))
+                return {"status": "fail", "message": "Browser failed to reach signup"}
             
             browser.close()
 
-        # 2. API STEP: Send Phone Number (Using Browser Cookies)
-        if not signup_url: return {"status": "fail", "message": "No Signup URL found"}
+        # B. API Step: Send OTP (using Browser Cookies)
+        if not signup_url: return {"status": "fail"}
         
         session = requests.Session()
-        # براؤزر والی کوکیز سیشن میں ڈالیں
         session.cookies.update(browser_cookies)
         
         payload = {"enrichment_status": "", "msisdn": data.phone}
-        
-        # Headers میں Referer بہت ضروری ہے
-        headers = API_HEADERS.copy()
+        headers = COMMON_HEADERS.copy()
         headers["Content-Type"] = "application/x-www-form-urlencoded"
-        headers["Referer"] = signup_url
+        headers["Referer"] = signup_url # Very Important!
         headers["Origin"] = "https://jazzdrive.com.pk"
         
-        log(s_id, "3. Sending SMS (API)", signup_url, "POST", "Sending number with browser cookies...")
-        
+        log(sid, "2. Sending SMS (API)", "POST", signup_url, "Sending...", f"Payload: {payload}")
         r = session.post(signup_url, data=payload, headers=headers, allow_redirects=False)
         
-        log(s_id, "3. SMS Result", str(r.status_code), "INFO", f"Location: {r.headers.get('Location', 'None')}")
+        log(sid, "2. SMS Response", "INFO", "Status", str(r.status_code), f"Location: {r.headers.get('Location')}")
         
         if r.status_code == 302 and 'Location' in r.headers:
-            verify_url = r.headers['Location']
-            # اگر لنک ریلیٹو ہے تو پورا کریں
-            if verify_url.startswith("/"):
-                verify_url = "https://jazzdrive.com.pk" + verify_url
-                
             return {
                 "status": "success", 
-                "verify_url": verify_url,
-                "cookies": session.cookies.get_dict() # اپڈیٹڈ کوکیز واپس بھیجیں
+                "verify_url": r.headers['Location'],
+                "cookies": session.cookies.get_dict() # Return updated cookies
             }
         else:
-            return {"status": "fail", "message": "SMS Sending Failed (No Redirect)"}
+            return {"status": "fail", "message": "SMS Sending Failed"}
 
     except Exception as e:
-        log(s_id, "CRITICAL ERROR", str(e), "FAIL", "")
+        log(sid, "System Error", "ERROR", str(e), "500", "")
         return {"status": "error", "message": str(e)}
 
-@app.post("/api/verify-otp")
-def verify_otp_api(data: VerifyRequest):
-    s_id = data.session_id
+
+# --- 2. VERIFY CHAIN (API Only) ---
+@app.post("/api/verify-chain")
+def verify_chain_api(data: VerifyRequest):
+    sid = data.session_id
     try:
-        # پچھلے سٹیپ کی کوکیز کے ساتھ سیشن بنائیں
         session = requests.Session()
         session.cookies.update(data.cookies)
         
-        # 4. Verify OTP (API)
-        headers = API_HEADERS.copy()
+        # A. Verify OTP
+        headers = COMMON_HEADERS.copy()
         headers["Content-Type"] = "application/x-www-form-urlencoded"
         headers["Referer"] = data.verify_url
         headers["Origin"] = "https://jazzdrive.com.pk"
         
-        log(s_id, "4. Verifying OTP", data.verify_url, "POST", f"Code: {data.otp}")
+        log(sid, "3. Verifying OTP", "POST", data.verify_url, "Sending...", f"Code: {data.otp}")
+        r1 = session.post(data.verify_url, data={"otp": data.otp}, headers=headers, allow_redirects=False)
+        log(sid, "3. Verify Result", "INFO", str(r1.status_code), r1.reason, f"Location: {r1.headers.get('Location')}")
         
-        r4 = session.post(data.verify_url, data={"otp": data.otp}, headers=headers, allow_redirects=False)
+        if r1.status_code != 302: return {"status": "fail", "message": "Invalid OTP"}
         
-        log(s_id, "4. Verification Result", str(r4.status_code), "INFO", r4.headers.get('Location', 'No Location'))
-        
-        if r4.status_code != 302:
-            return {"status": "fail", "message": "Invalid OTP"}
-
-        # 5. Follow Redirect Chain to get Tokens
-        auth_url = r4.headers['Location']
+        # B. Authorize Redirect
+        auth_url = r1.headers['Location']
         if auth_url.startswith("/"): auth_url = "https://jazzdrive.com.pk" + auth_url
         
-        log(s_id, "5. Following Redirect", auth_url, "GET", "Getting OAuth Code...")
-        r5 = session.get(auth_url, headers=API_HEADERS, allow_redirects=False)
+        log(sid, "4. Authorization", "GET", auth_url, "Sending...", "")
+        r2 = session.get(auth_url, headers=COMMON_HEADERS, allow_redirects=False)
         
-        if 'Location' in r5.headers:
-            cloud_redirect = r5.headers['Location']
-            log(s_id, "6. Cloud Redirect Found", cloud_redirect, "SUCCESS", "Ready to extract login keys.")
+        cloud_redirect = r2.headers.get('Location')
+        if not cloud_redirect: return {"status": "fail", "message": "Auth Failed"}
+        
+        # C. Get OAuth Code (from Cloud URL)
+        log(sid, "5. Cloud Redirect", "GET", cloud_redirect, "Found", "")
+        parsed = parse_qs(urlparse(cloud_redirect).query)
+        oauth_code = parsed.get('code', [None])[0]
+        
+        if not oauth_code: return {"status": "fail", "message": "No Code Found"}
+        
+        # D. Login / Exchange Token (sapi/login/oauth)
+        login_api = f"https://cloud.jazzdrive.com.pk/sapi/login/oauth?action=login&platform=web&keytype=authorizationcode&key={oauth_code}"
+        log(sid, "6. Exchanging Token", "GET", login_api, "Sending...", "")
+        
+        r3 = session.get(login_api, headers=CLOUD_API_HEADERS)
+        login_data = r3.json()
+        
+        val_key = login_data.get("data", {}).get("validationkey")
+        if not val_key:
+            log(sid, "Login Failed", "ERROR", "", "", str(login_data))
+            return {"status": "fail"}
             
-            # یہاں آپ further login logic لگا سکتے ہیں (جیسا پچھلے کوڈ میں تھا)
-            parsed = parse_qs(urlparse(cloud_redirect).query)
-            code = parsed.get('code', [None])[0]
-            if code:
-                 log(s_id, "FINAL", f"OAuth Code: {code}", "SUCCESS", "Use this code to get tokens via /sapi/login/oauth")
+        log(sid, "Login Success", "INFO", "ValidationKey Found", "OK", val_key)
 
-        return {"status": "success"}
+        # E. FINAL STEP: Get Labels (sapi/label)
+        final_url = f"https://cloud.jazzdrive.com.pk/sapi/label?action=get&limit=100&shared_items=true&validationkey={val_key}"
+        payload = {"data":{"types":["file"],"origin":["omh","shared_label"]}}
+        
+        # Update headers specifically for this POST request
+        final_headers = CLOUD_API_HEADERS.copy()
+        final_headers["Content-Type"] = "application/json;charset=UTF-8"
+        
+        log(sid, "7. Fetching Labels (Final)", "POST", final_url, "Sending...", json.dumps(payload))
+        
+        r4 = session.post(final_url, json=payload, headers=final_headers)
+        
+        # PRINT FINAL RESPONSE
+        log(sid, "🎉 FINAL RESPONSE", "SUCCESS", "200 OK", "JSON Data:", json.dumps(r4.json(), indent=2))
+        
+        return {"status": "success", "data": r4.json()}
 
     except Exception as e:
-        log(s_id, "ERROR", str(e), "FAIL", "")
+        log(sid, "CRITICAL ERROR", str(e), "FAIL", "", "")
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/get-logs")
-def get_logs(id: str): return {"logs": logs_db.get(id, "")}
+def logs_api(id: str): return {"logs": logs_db.get(id, "")}
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
