@@ -3,6 +3,7 @@ import json
 import requests
 import uuid
 import os
+import io
 import random
 from flask import Flask, Response, request, render_template_string, stream_with_context
 from selenium import webdriver
@@ -22,7 +23,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive Automation (Final Fix)</title>
+    <title>Jazz Drive Upload Test</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -54,7 +55,7 @@ HTML_CODE = """
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Automation (Final Fix)</h1>
+        <h1>Jazz Drive Upload Test</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -163,7 +164,7 @@ HTML_CODE = """
 """
 
 # ==========================================
-# HELPER FUNCTIONS & GLOBAL CONFIG
+# HELPER FUNCTIONS
 # ==========================================
 
 def get_random_device_id():
@@ -172,6 +173,11 @@ def get_random_device_id():
 
 def send_log(message, style='info'):
     return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
+
+# A minimal valid JPEG image (1x1 pixel) for testing upload
+def get_test_image():
+    # This is a byte string of a valid tiny JPEG
+    return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
 
 # Global Session
 session = requests.Session()
@@ -218,7 +224,6 @@ def process_step_1(phone_number):
             
             cookies = driver.get_cookies()
             for cookie in cookies:
-                # لاگز کے مطابق کوکی کا نام Case Sensitive ہو سکتا ہے، اس لیے ہم احتیاط کر رہے ہیں
                 if 'device' in cookie['name'].lower() or 'deviceid' in cookie['name'].lower():
                     device_id = cookie['value']
                     yield send_log(f"✔ Device ID Found in Cookies: {device_id}", 'success')
@@ -266,11 +271,10 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> TOKEN -> LABELS (FINAL FIX)
+# STEP 2: VERIFY -> TOKEN -> UPLOAD (TEST)
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
-        # ہیڈرز میں ڈیوائس آئی ڈی سیٹ کریں
         session.headers['X-deviceid'] = device_id
         
         yield send_log(f"6. API Call: OTP ویریفائی کر رہے ہیں...")
@@ -281,7 +285,6 @@ def process_step_2(otp, verify_url, device_id):
         final_url = resp.url
         yield send_log(f"   Status: {resp.status_code}")
         
-        # Extract Code
         parsed = urlparse(final_url)
         qs = parse_qs(parsed.query)
         
@@ -312,22 +315,17 @@ def process_step_2(otp, verify_url, device_id):
             return
 
         if 'data' in login_json and 'validationkey' in login_json['data']:
-            # ڈیٹا ایکسٹریکٹ کریں
             val_key = login_json['data']['validationkey']
             new_jsession = login_json['data'].get('jsessionid')
             
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
             yield send_log(f"✔ New Session ID: {new_jsession}", 'info')
             
-            # ---------------------------------------------------------
-            # CRITICAL STEP: Construct Headers EXACTLY like the Browser
-            # ---------------------------------------------------------
-            
-            # Browser sends this specific cookie string
-            # Notice: validationKey (CamelCase) and JSESSIONID
+            # --- CONSTRUCT HEADERS (Based on LOGS) ---
+            # اہم: کوکیز بالکل ویسی ہی جیسے لاگ میں ہیں
             cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
-            auth_headers = {
+            base_headers = {
                 'Host': 'cloud.jazzdrive.com.pk',
                 'Connection': 'keep-alive',
                 'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
@@ -335,61 +333,92 @@ def process_step_2(otp, verify_url, device_id):
                 'sec-ch-ua-mobile': '?0',
                 'User-Agent': common_headers['User-Agent'],
                 'X-deviceid': device_id,
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 'Accept': '*/*',
                 'Origin': 'https://cloud.jazzdrive.com.pk',
-                'Sec-Fetch-Site': 'same-origin',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Dest': 'empty',
                 'Referer': 'https://cloud.jazzdrive.com.pk/',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Accept-Language': 'en-US,en;q=0.9,ur-PK;q=0.8,ur;q=0.7',
                 'Cookie': cookie_string
             }
 
             # ---------------------------------------------------------
-            # STEP 7.5: Warm-up Call (Fetch Profile) - AS SEEN IN LOGS
+            # STEP 7.5: WARM-UP (Fetch Profile & System Info)
             # ---------------------------------------------------------
-            yield send_log("7.5. سیشن ایکٹو کرنے کے لیے Profile Fetch کی جا رہی ہے...", 'info')
+            yield send_log("7.5. سیشن Warm-up (System Info & Profile)...", 'info')
+            
+            # Call System Info
+            sys_info_url = "https://cloud.jazzdrive.com.pk/sapi/system/information"
+            requests.get(sys_info_url, params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
+            
+            # Call Profile (اہم ترین)
             profile_url = "https://cloud.jazzdrive.com.pk/sapi/profile"
-            
-            # URL میں بھی key بھیجنی ہے
-            profile_params = {'action': 'get', 'validationkey': val_key}
-            
-            # یہاں requests.get استعمال کریں گے، manual headers کے ساتھ
-            requests.get(profile_url, params=profile_params, headers=auth_headers)
+            requests.get(profile_url, params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
             
             # ---------------------------------------------------------
-            # STEP 8: FINAL CALL - LABELS
+            # STEP 8: UPLOAD FILE (As per Log)
             # ---------------------------------------------------------
-            yield send_log("8. ڈیٹا Fetch کیا جا رہا ہے (Labels)...")
-            label_url = "https://cloud.jazzdrive.com.pk/sapi/label"
+            yield send_log("8. فائل اپلوڈ ٹیسٹ شروع...", 'header')
+            upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
             
-            # Query Params (action, limit, shared_items, validationkey)
-            l_params = {
-                'action': 'get', 
-                'limit': '100', 
-                'shared_items': 'true', 
-                'validationkey': val_key # URL requires validationkey (lowercase k)
+            upload_params = {
+                'action': 'save',
+                'acceptasynchronous': 'true',
+                'validationkey': val_key
             }
             
-            l_json = {"data": {"types": ["file"], "origin": ["omh", "shared_label"]}}
+            # 1. Test Image Byte Data
+            image_bytes = get_test_image()
+            filename = f"test_{int(time.time())}.jpg"
             
-            # JSON Content Type اپڈیٹ کریں
-            final_headers = auth_headers.copy()
-            final_headers['Content-Type'] = 'application/json;charset=UTF-8'
+            # 2. JSON Metadata (جیسا کہ لاگ میں تھا)
+            # نوٹ: لاگ میں یہ ملٹی پارٹ کے اندر الگ حصہ بن کر جا رہا ہے یا باڈی میں
+            # Requests کے ساتھ ہم اسے 'files' ڈکشنری میں ڈال کر بھیج سکتے ہیں
+            metadata = {
+                "data": {
+                    "name": filename,
+                    "size": len(image_bytes),
+                    "modificationdate": "20260115T180000Z",
+                    "contenttype": "image/jpeg"
+                }
+            }
+            
+            # Multipart Payload Construction
+            # Jazz Drive seems to accept multipart where the JSON is a separate part named 'json' or similar
+            # Based on the log, it's mixed. We'll try the standard way first.
+            
+            files_payload = {
+                'file': (filename, image_bytes, 'image/jpeg')
+            }
+            
+            # لاگ کے مطابق باڈی میں JSON بھی ہے، اسے ہم 'data' فیلڈ میں ڈالنے کی کوشش کرتے ہیں
+            # یا پھر raw body construct کرتے ہیں۔
+            # لاگ میں: <binary> پھر { "data": ... }
+            # requests اس کو ہینڈل کرنے کے لیے data={} اور files={} دونوں لیتا ہے۔
+            
+            upload_headers = base_headers.copy()
+            # Content-Type ہٹا دیں تاکہ requests خود multipart boundary لگا سکے
+            
+            # اہم: لاگ میں JSON ڈیٹا ملٹی پارٹ کا حصہ نہیں لگ رہا تھا بلکہ binary کے فوراً بعد تھا
+            # لیکن standard multipart میں یہ fields ہوتے ہیں۔
+            # ہم اسے 'json' فیلڈ میں بھیج کر دیکھتے ہیں جو عام طور پر Funambol میں ہوتا ہے۔
+            
+            multipart_data = {
+                'file': (filename, image_bytes, 'image/jpeg'),
+                'json': (None, json.dumps(metadata), 'application/json') 
+            }
 
-            # فائنل ریکویسٹ
-            resp_final = requests.post(label_url, params=l_params, json=l_json['data'], headers=final_headers)
+            resp_upload = requests.post(
+                upload_url, 
+                params=upload_params, 
+                files=multipart_data, 
+                headers=upload_headers
+            )
             
-            yield send_log("---------------- RESPONSE ----------------", 'header')
+            yield send_log("---------------- UPLOAD RESPONSE ----------------", 'header')
+            yield send_log(resp_upload.text, 'info')
             
-            if "PAPI-0000" in resp_final.text:
-                 yield send_log("❌ PAPI Error still occurred. Check headers.", 'error')
+            if '"success":"Media uploaded successfully"' in resp_upload.text:
+                 yield send_log("✅ مبارک ہو! فائل کامیابی سے اپلوڈ ہو گئی۔", 'success')
             else:
-                 yield send_log("SUCCESS!", 'success')
-                 
-            yield send_log(resp_final.text, 'info')
+                 yield send_log("⚠️ اپلوڈ میں مسئلہ ہے، رسپانس چیک کریں۔", 'error')
             
             yield f"DATA:{json.dumps({'type': 'finished'})}\n"
             
