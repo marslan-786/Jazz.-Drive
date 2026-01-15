@@ -11,8 +11,8 @@ from playwright.async_api import async_playwright
 
 app = FastAPI()
 
-# --- Global State for Live Feed ---
-sessions_db = {}
+# --- Database ---
+db = {}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
@@ -20,22 +20,15 @@ HEADERS = {
     "Referer": "https://jazzdrive.com.pk/"
 }
 
-class NumberRequest(BaseModel):
-    phone: str
-
-class OtpRequest(BaseModel):
-    otp: str
-    session_id: str
-
-# --- Frontend UI (CCTV Style) ---
+# --- UI Template ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Jazz Drive Full Browser Automation</title>
+    <title>Jazz Drive Bot (Smart Retry)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { background-color: #0d1117; color: #e6edf3; font-family: 'Segoe UI', monospace; padding: 20px; }
+        body { background-color: #0d1117; color: #e6edf3; font-family: monospace; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
         .panel { background: #161b22; border: 1px solid #30363d; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
         
@@ -44,106 +37,98 @@ HTML_TEMPLATE = """
         button:disabled { background: #30363d; cursor: not-allowed; }
         button.reset { background: #da3633; float: right; padding: 5px 10px; font-size: 12px; }
         
-        /* Live Monitor Screen */
         #monitor { 
-            width: 100%; min-height: 350px; background: #000; border: 2px solid #3fb950; 
-            display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative;
+            width: 100%; min-height: 300px; background: #000; border: 2px solid #3fb950; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
         }
-        #monitor img { max-width: 100%; max-height: 400px; border: 1px solid #333; }
+        #monitor img { max-width: 100%; max-height: 400px; }
         .status-bar { width: 100%; background: #21262d; padding: 5px; text-align: center; font-size: 12px; color: #8b949e; }
         
-        #logs { height: 150px; overflow-y: scroll; background: #0d1117; padding: 10px; border: 1px solid #30363d; font-size: 12px; color: #58a6ff; margin-top: 10px; font-family: monospace; }
-        
+        #logs { height: 150px; overflow-y: scroll; background: #0d1117; padding: 10px; border: 1px solid #30363d; font-size: 12px; color: #58a6ff; margin-top: 10px; }
         .hidden { display: none; }
+        .error-msg { color: #f85149; font-weight: bold; margin-bottom: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🤖 Jazz Drive Human Mode <button class="reset" onclick="resetApp()">New Session</button></h2>
+        <h2>🤖 Jazz Bot <button class="reset" onclick="resetApp()">New Session</button></h2>
         
         <div class="panel" id="step1">
-            <h3>Step 1: Number Input (via Browser)</h3>
+            <h3>Step 1: Send OTP</h3>
             <input type="text" id="phone" placeholder="030xxxxxxxxx" value="03027665767">
-            <button onclick="startBrowserStep1()" id="btn1">Start Browser & Send OTP</button>
+            <button onclick="startStep1()" id="btn1">Start & Send OTP</button>
         </div>
 
         <div class="panel hidden" id="step2">
-            <h3>Step 2: Enter OTP (Auto-Submit)</h3>
-            <input type="text" id="otp" placeholder="Enter 4-digit Code">
-            <button onclick="startBrowserStep2()" id="btn2">Type OTP & Login</button>
+            <h3>Step 2: Enter OTP</h3>
+            <div id="otp-status" class="error-msg hidden">Invalid OTP! Jazz sent a new one. Enter it below:</div>
+            <input type="text" id="otp" placeholder="Enter Code">
+            <button onclick="startStep2()" id="btn2">Login</button>
         </div>
 
         <div class="panel hidden" id="step3">
-            <h3>Step 3: Upload File</h3>
-            <div style="background: #238636; padding: 10px; border-radius: 4px; margin-bottom: 10px;">LOGIN SUCCESSFUL!</div>
+            <h3>Step 3: Upload</h3>
+            <div style="color:#3fb950; margin-bottom:10px;">✅ LOGIN SUCCESSFUL</div>
             <input type="file" id="fileInput">
             <button onclick="uploadFile()" id="btn3">Upload & Get Link</button>
-            <p id="final-link" style="word-break: break-all; color: #58a6ff; margin-top:10px;"></p>
+            <p id="final-link" style="color: #58a6ff; margin-top:10px; word-break: break-all;"></p>
         </div>
 
         <div id="live-area" class="hidden">
-            <h3>🔴 Live Browser Feed</h3>
             <div id="monitor">
-                <img id="live-img" src="" alt="Connecting to Browser...">
+                <img id="live-img" src="" alt="Live Feed">
                 <div class="status-bar" id="live-status">Waiting...</div>
             </div>
             <div id="logs"></div>
         </div>
-
     </div>
 
     <script>
-        // --- Logic ---
         let pollInterval = null;
-        let currentSessionId = localStorage.getItem('session_id') || "";
+        let currentSessionKey = localStorage.getItem('session_key') || "";
 
         function resetApp() { localStorage.clear(); window.location.reload(); }
 
-        // Restore State
-        if(localStorage.getItem('step') === '2') {
-            document.getElementById('step1').classList.add('hidden');
-            document.getElementById('step2').classList.remove('hidden');
-            document.getElementById('live-area').classList.remove('hidden');
-            if(currentSessionId) startPolling(currentSessionId);
-        }
-        if(localStorage.getItem('step') === '3') {
-            document.getElementById('step1').classList.add('hidden');
-            document.getElementById('step2').classList.add('hidden');
-            document.getElementById('step3').classList.remove('hidden');
+        // Restore State logic
+        window.onload = function() {
+            if(localStorage.getItem('step') === '2') {
+                document.getElementById('step1').classList.add('hidden');
+                document.getElementById('step2').classList.remove('hidden');
+                document.getElementById('live-area').classList.remove('hidden');
+                if(currentSessionKey) startPolling(currentSessionKey);
+            }
+            if(localStorage.getItem('step') === '3') {
+                document.getElementById('step1').classList.add('hidden');
+                document.getElementById('step2').classList.add('hidden');
+                document.getElementById('step3').classList.remove('hidden');
+            }
         }
 
-        async function startBrowserStep1() {
+        async function startStep1() {
             const phone = document.getElementById('phone').value;
-            // Generate a random ID for tracking this specific browser session
-            currentSessionId = "session_" + Date.now();
-            localStorage.setItem('session_id', currentSessionId);
+            currentSessionKey = "sess_" + Date.now();
+            localStorage.setItem('session_key', currentSessionKey);
 
             document.getElementById('btn1').disabled = true;
             document.getElementById('live-area').classList.remove('hidden');
             
-            // Start Backend Task
-            await fetch('/api/step1-browser', {
+            await fetch('/api/step1', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({phone: phone, session_key: currentSessionId})
+                body: JSON.stringify({phone: phone, session_key: currentSessionKey})
             });
-
-            startPolling(currentSessionId);
+            startPolling(currentSessionKey);
         }
 
-        async function startBrowserStep2() {
+        async function startStep2() {
             const otp = document.getElementById('otp').value;
-            // We need the Real ID (from Jazz URL) which Step 1 should have saved in DB
-            // But for tracking the UI, we use our currentSessionId
-            
             document.getElementById('btn2').disabled = true;
+            document.getElementById('otp-status').classList.add('hidden'); // Hide error if any
             
-            await fetch('/api/step2-browser', {
+            await fetch('/api/step2', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({otp: otp, session_key: currentSessionId})
+                body: JSON.stringify({otp: otp, session_key: currentSessionKey})
             });
-            
-            // Polling continues/restarts
-            startPolling(currentSessionId);
+            startPolling(currentSessionKey);
         }
 
         function startPolling(key) {
@@ -153,39 +138,46 @@ HTML_TEMPLATE = """
                     const res = await fetch(`/api/status/${key}`);
                     const data = await res.json();
                     
-                    // Update Logs
+                    // Logs & Screenshot
                     if(data.logs) {
                         const l = document.getElementById('logs');
                         l.innerHTML = data.logs.map(x => `<div>> ${x}</div>`).join('');
                         l.scrollTop = l.scrollHeight;
                     }
-                    // Update Image
                     if(data.screenshot) {
                         document.getElementById('live-img').src = "data:image/jpeg;base64," + data.screenshot;
-                        document.getElementById('live-status').innerText = data.last_action || "Processing...";
+                        document.getElementById('live-status').innerText = data.last_action || "Working...";
                     }
 
-                    // Handle Step 1 Completion
+                    // Handle Success Step 1
                     if(data.stage === 'step1_complete') {
                         clearInterval(pollInterval);
                         localStorage.setItem('step', '2');
-                        // Backend stored the Jazz Real ID, no need to pass it manually if DB handles it
-                        location.reload(); 
+                        location.reload();
                     }
 
-                    // Handle Step 2 Completion
+                    // Handle Login Success
                     if(data.stage === 'login_success') {
                         clearInterval(pollInterval);
                         localStorage.setItem('step', '3');
                         localStorage.setItem('auth_data', JSON.stringify(data.auth_data));
                         location.reload();
                     }
-                    
+
+                    // --- RETRY LOGIC (Invalid OTP) ---
+                    if(data.stage === 'retry_otp') {
+                        clearInterval(pollInterval);
+                        document.getElementById('btn2').disabled = false;
+                        document.getElementById('otp').value = ""; // Clear input
+                        document.getElementById('otp-status').innerText = "❌ Invalid OTP! Jazz sent a new one. Try again.";
+                        document.getElementById('otp-status').classList.remove('hidden');
+                        alert("Invalid OTP! Check SMS for new code.");
+                    }
+
+                    // Handle Fatal Error
                     if(data.stage === 'failed') {
                         clearInterval(pollInterval);
-                        alert("Failed: " + data.error);
-                        localStorage.clear();
-                        location.reload();
+                        alert("Fatal Error: " + data.error);
                     }
 
                 } catch(e) { console.log(e); }
@@ -193,137 +185,90 @@ HTML_TEMPLATE = """
         }
 
         async function uploadFile() {
-            // ... (Same upload logic as before) ...
             const file = document.getElementById('fileInput').files[0];
             const authData = localStorage.getItem('auth_data');
             const fd = new FormData();
             fd.append("file", file);
             fd.append("cookies_json", authData);
             
-            document.getElementById('btn3').disabled = true;
             document.getElementById('btn3').innerText = "Uploading...";
+            document.getElementById('btn3').disabled = true;
             
             const res = await fetch('/api/upload', {method:'POST', body:fd});
             const d = await res.json();
             
             if(d.status === 'success') {
-                document.getElementById('final-link').innerHTML = `<a href="${d.jazz_link}" target="_blank">${d.jazz_link}</a>`;
+                document.getElementById('final-link').innerHTML = `Direct Link: <a href="${d.jazz_link}" target="_blank">${d.jazz_link}</a>`;
             } else {
                 alert(d.message);
             }
             document.getElementById('btn3').disabled = false;
+            document.getElementById('btn3').innerText = "Upload & Get Link";
         }
     </script>
 </body>
 </html>
 """
 
-# --- Backend Worker Logic ---
-
-# In-Memory DB
-# Structure: { "session_123": { "logs": [], "screenshot": "base64", "real_jazz_id": "...", "auth_data": {}, "stage": "running" } }
-db = {}
+# --- Backend Logic ---
 
 class BrowserReq(BaseModel):
     phone: str = ""
     otp: str = ""
-    session_key: str # Our local UI tracker
+    session_key: str
 
-# --- TASK 1: OPEN BROWSER -> TYPE NUMBER -> CLICK -> GET ID ---
 async def task_step1(phone: str, key: str):
-    db[key] = {"logs": ["Initializing Browser..."], "screenshot": None, "stage": "running"}
+    db[key] = {"logs": ["Started Step 1..."], "screenshot": None, "stage": "running"}
     
-    def log(m): db[key]["logs"].append(m); print(m)
-    async def shot(p, action):
-        try:
-            b = await p.screenshot(type='jpeg', quality=40)
-            db[key]["screenshot"] = base64.b64encode(b).decode('utf-8')
-            db[key]["last_action"] = action
+    def log(m): db[key]["logs"].append(m); print(f"[{key}] {m}")
+    async def shot(p, a):
+        try: db[key]["screenshot"] = base64.b64encode(await p.screenshot(type='jpeg', quality=40)).decode(); db[key]["last_action"] = a
         except: pass
 
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-            context = await browser.new_context(user_agent=HEADERS["User-Agent"])
-            page = await context.new_page()
+            page = await browser.new_page(user_agent=HEADERS["User-Agent"])
 
-            # 1. Open Cloud URL
-            log("Opening cloud.jazzdrive.com.pk...")
+            log("Opening Jazz Cloud...")
             await page.goto("https://cloud.jazzdrive.com.pk", timeout=60000)
-            await shot(page, "Page Loaded")
+            await shot(page, "Home Page")
 
-            # 2. Wait for Redirect to Signup/Login Page
-            log("Waiting for redirection...")
-            # We expect a redirect to oauth2/signup.php or similar
+            # Input Number
             try:
-                await page.wait_for_url("**signup.php**", timeout=30000)
-                log("Redirected to Signup Page!")
+                await page.wait_for_selector('input', timeout=30000)
+                # Try to find input field (varies)
+                await page.type('input[type="tel"]', phone)
             except:
-                log("Warning: Maybe already on input page?")
+                await page.type('input', phone) # fallback
             
-            await shot(page, "On Input Page")
-
-            # 3. Find Input & Type Number
-            log(f"Typing Number: {phone}")
-            # Try multiple selectors for input
-            input_sel = 'input[type="tel"]'
-            if await page.locator(input_sel).count() == 0:
-                input_sel = 'input[name="msisdn"]' # fallback
-            
-            await page.fill(input_sel, phone)
             await shot(page, "Number Typed")
-
-            # 4. Click Submit/Subscribe
-            log("Searching for Submit Button...")
-            # User said "Subscribe" button, usually it's type submit or has text
-            # We will click the first button found
-            await page.click('button') 
-            await shot(page, "Button Clicked")
-
-            # 5. Wait for Redirect to Verify Page (to capture ID)
-            log("Waiting for Verify Page to load...")
-            await page.wait_for_url("**verify.php**", timeout=45000)
+            await page.keyboard.press('Enter') # Submit
             
-            final_url = page.url
-            log(f"Landed on: {final_url}")
-            await shot(page, "Verify Page Reached")
-
-            # Extract ID
-            if "id=" in final_url:
-                real_id = final_url.split("id=")[1].split("&")[0]
-                db[key]["real_jazz_id"] = real_id
-                db[key]["stage"] = "step1_complete"
-                log(f"SUCCESS! ID Captured: {real_id}")
-            else:
-                db[key]["stage"] = "failed"
-                db[key]["error"] = "ID not found in URL"
-
+            log("Waiting for Redirect to Verify Page...")
+            await page.wait_for_url("**verify.php**", timeout=60000)
+            
+            real_id = page.url.split("id=")[1].split("&")[0]
+            db[key]["real_jazz_id"] = real_id
+            db[key]["stage"] = "step1_complete"
+            log(f"ID Captured: {real_id}")
+            
             await browser.close()
-
     except Exception as e:
-        log(f"Error: {e}")
-        db[key]["stage"] = "failed"
-        db[key]["error"] = str(e)
+        db[key]["stage"] = "failed"; db[key]["error"] = str(e)
 
 
-# --- TASK 2: OPEN VERIFY LINK -> TYPE OTP (AUTO SUBMIT) -> GET COOKIES ---
 async def task_step2(otp: str, key: str):
-    # Retrieve Real ID from Step 1
     real_id = db.get(key, {}).get("real_jazz_id")
-    if not real_id:
-        db[key] = {"logs": ["Error: Session ID lost. Restart."], "stage": "failed", "error": "ID Lost"}
-        return
-
-    # Reset logs for Step 2
-    db[key]["logs"] = ["Resuming Browser for Step 2...", f"Target ID: {real_id}"]
+    if not real_id: return
+    
+    # لاگز صاف کریں لیکن سٹیج رننگ رکھیں
+    db[key]["logs"] = [f"Attempting OTP: {otp} on ID: {real_id}"]
     db[key]["stage"] = "running"
     
-    def log(m): db[key]["logs"].append(m); print(m)
-    async def shot(p, act):
-        try:
-            b = await p.screenshot(type='jpeg', quality=40)
-            db[key]["screenshot"] = base64.b64encode(b).decode('utf-8')
-            db[key]["last_action"] = act
+    def log(m): db[key]["logs"].append(m); print(f"[{key}] {m}")
+    async def shot(p, a):
+        try: db[key]["screenshot"] = base64.b64encode(await p.screenshot(type='jpeg', quality=40)).decode(); db[key]["last_action"] = a
         except: pass
 
     try:
@@ -332,102 +277,85 @@ async def task_step2(otp: str, key: str):
             context = await browser.new_context(user_agent=HEADERS["User-Agent"])
             page = await context.new_page()
 
-            # 1. Go Directly to Verify Page
-            target = f"https://jazzdrive.com.pk/verify.php?id={real_id}"
-            log(f"Navigating to {target}")
-            await page.goto(target, timeout=60000)
-            await shot(page, "Verify Page Loaded")
+            verify_url = f"https://jazzdrive.com.pk/verify.php?id={real_id}"
+            log(f"Opening {verify_url}")
+            await page.goto(verify_url, timeout=45000)
+            await shot(page, "Verify Page")
 
-            # 2. Type OTP (Slowly for Auto-Submit)
-            log(f"Typing OTP: {otp} (Slowly)...")
-            
-            # Focus on input
+            # Type OTP with delay for Auto-Submit
+            log("Typing OTP (Auto-Submit)...")
             try:
-                await page.click('input[name="otp"]')
+                await page.type('input[name="otp"]', otp, delay=200)
             except:
-                await page.click('input') # Fallback
+                await page.type('input', otp, delay=200)
             
-            # Type character by character with delay to trigger Auto-Submit
-            await page.type('input', otp, delay=200) 
-            await shot(page, "OTP Typed")
+            await shot(page, "OTP Entered")
             
-            log("OTP Entered. Waiting for Auto-Redirect...")
-
-            # 3. Wait for Cloud Dashboard
+            # Wait for Result (Redirect OR Error)
+            log("Waiting for result...")
             try:
-                await page.wait_for_url("https://cloud.jazzdrive.com.pk/**", timeout=60000)
-                log("Redirect Successful! Dashboard Loaded.")
-                await shot(page, "Login Success")
-            except Exception as e:
-                log("Timeout waiting for dashboard. Checking URL...")
-                await shot(page, "Stuck/Timeout")
-
-            # 4. Grab Cookies/Keys
-            cookies = await context.cookies()
-            c_dict = {c['name']: c['value'] for c in cookies}
-            
-            # Check for Key in URL (Backup)
-            if "validationkey=" in page.url.lower():
-                from urllib.parse import urlparse, parse_qs
-                parsed = parse_qs(urlparse(page.url).query)
-                for k, v in parsed.items():
-                    if k.lower() == 'validationkey':
-                        c_dict['validationKey'] = v[0]
-
-            if c_dict.get('validationKey') or c_dict.get('validationkey'):
+                # 1. Success Case: Redirect to Cloud
+                await page.wait_for_url("https://cloud.jazzdrive.com.pk/**", timeout=10000)
+                log("Success! Redirected.")
+                
+                # Get Keys
+                cookies = await context.cookies()
+                c_dict = {c['name']: c['value'] for c in cookies}
+                if "validationkey=" in page.url.lower():
+                    from urllib.parse import urlparse, parse_qs
+                    c_dict['validationKey'] = parse_qs(urlparse(page.url).query)['validationKey'][0]
+                
                 db[key]["auth_data"] = c_dict
                 db[key]["stage"] = "login_success"
-                log("Validation Key FOUND!")
-            else:
-                db[key]["stage"] = "failed"
-                db[key]["error"] = "Login page loaded but Key missing"
+
+            except:
+                # 2. Failure Case: Still on Verify Page (Timeout)
+                log("Dashboard not loaded. Checking for Invalid OTP...")
+                await shot(page, "Check Error")
+                
+                # اگر ہم ابھی بھی verify.php پر ہیں، تو اس کا مطلب OTP غلط ہے
+                if "verify.php" in page.url:
+                    log("Stuck on Verify Page -> INVALID OTP Detected")
+                    db[key]["stage"] = "retry_otp" # This triggers the loop in frontend
+                else:
+                    db[key]["stage"] = "failed"
+                    db[key]["error"] = "Unknown Error"
 
             await browser.close()
-
     except Exception as e:
-        log(f"Error: {e}")
-        db[key]["stage"] = "failed"
-        db[key]["error"] = str(e)
+        db[key]["stage"] = "failed"; db[key]["error"] = str(e)
 
 
 # --- Routes ---
-
 @app.get("/")
 def home(): return HTMLResponse(HTML_TEMPLATE)
 
-@app.post("/api/step1-browser")
-async def start_s1(req: BrowserReq, tasks: BackgroundTasks):
+@app.post("/api/step1")
+async def step1(req: BrowserReq, tasks: BackgroundTasks):
     tasks.add_task(task_step1, req.phone, req.session_key)
-    return {"status": "started"}
+    return {"status": "ok"}
 
-@app.post("/api/step2-browser")
-async def start_s2(req: BrowserReq, tasks: BackgroundTasks):
+@app.post("/api/step2")
+async def step2(req: BrowserReq, tasks: BackgroundTasks):
     tasks.add_task(task_step2, req.otp, req.session_key)
-    return {"status": "started"}
+    return {"status": "ok"}
 
 @app.get("/api/status/{key}")
-def status(key: str):
-    return db.get(key, {"status": "unknown"})
+def status(key: str): return db.get(key, {})
 
 @app.post("/api/upload")
 async def upload_file_api(file: UploadFile = File(...), cookies_json: str = Form(...)):
     # ... (Same Upload Logic as before) ...
-    # مختصر کر رہا ہوں، آپ اپنا پچھلا کوڈ یہاں ڈالیں
     try:
         cookies = json.loads(cookies_json)
         v_key = cookies.get('validationKey') or cookies.get('validationkey')
         session = requests.Session(); session.cookies.update(cookies)
-        # 1. Upload
-        files = {'data': (None, json.dumps({"data":{"name":file.filename, "size":0, "modificationdate":"20250101"}}), 'application/json'), 
-                 'file': (file.filename, await file.read(), file.content_type)}
-        r1 = session.post("https://cloud.jazzdrive.com.pk/sapi/upload", 
-                          params={"action":"save","acceptasynchronous":"true","validationkey":v_key}, files=files, headers=HEADERS)
+        ts = str(int(asyncio.get_event_loop().time()))
+        files = {'data': (None, json.dumps({"data":{"name":file.filename,"size":0,"modificationdate":ts,"contenttype":file.content_type}}), 'application/json'), 'file': (file.filename, await file.read(), file.content_type)}
+        r1 = session.post("https://cloud.jazzdrive.com.pk/sapi/upload", params={"action":"save","acceptasynchronous":"true","validationkey":v_key}, files=files, headers=HEADERS)
         fid = r1.json()['id']
-        # 2. Get Link
-        r2 = session.post("https://cloud.jazzdrive.com.pk/sapi/media", params={"action":"get","origin":"omh,dropbox","validationkey":v_key}, 
-                          json={"data":{"ids":[fid],"fields":["url"]}}, headers=HEADERS)
-        url = r2.json()['data']['media'][0]['url']
-        return {"status":"success", "jazz_link":url}
+        r2 = session.post("https://cloud.jazzdrive.com.pk/sapi/media", params={"action":"get","origin":"omh,dropbox","validationkey":v_key}, json={"data":{"ids":[fid],"fields":["url"]}}, headers=HEADERS)
+        return {"status":"success", "jazz_link":r2.json()['data']['media'][0]['url']}
     except Exception as e: return {"status":"error", "message":str(e)}
 
 if __name__ == "__main__":
