@@ -16,7 +16,7 @@ from urllib.parse import urlparse, parse_qs
 app = Flask(__name__)
 
 # ==========================================
-# HTML TEMPLATE (Frontend)
+# HTML TEMPLATE (With File Input)
 # ==========================================
 HTML_CODE = """
 <!DOCTYPE html>
@@ -24,13 +24,14 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive - Auto Upload & Share</title>
+    <title>Jazz Drive - Custom Upload</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
         h1 { text-align: center; color: #00ff00; }
         .control-panel { background: #2d2d2d; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #444; }
         input { width: 100%; padding: 10px; margin: 10px 0; background: #444; border: 1px solid #666; color: #fff; border-radius: 5px; font-size: 16px; }
+        input[type="file"] { padding: 5px; background: #333; }
         button { width: 100%; padding: 12px; background: #007bff; border: none; color: white; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold; margin-top: 5px;}
         button:hover { background: #0056b3; }
         button:disabled { background: #555; cursor: not-allowed; }
@@ -51,13 +52,13 @@ HTML_CODE = """
         .log-success { color: #00ff00; }
         .log-error { color: #ff4444; }
         .log-header { color: #ffff00; font-size: 12px; font-weight: bold; margin-top: 10px; display: block; }
-        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; word-break: break-all; }
+        .log-link { color: #00ff00; font-weight: bold; text-decoration: underline; font-size: 16px; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Auto (Upload & Share)</h1>
+        <h1>Jazz Drive Custom Upload</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -66,6 +67,12 @@ HTML_CODE = """
             <button id="startBtn" onclick="startProcess()">اسٹارٹ (Start)</button>
             
             <div id="otpSection" class="hidden">
+                <hr style="border-color: #555;">
+                <label>فائل منتخب کریں (Optional):</label>
+                <input type="file" id="userFile">
+                <small style="color: #aaa;">اگر فائل نہیں چنیں گے تو آٹو ٹیسٹ امیج اپلوڈ ہوگی۔</small>
+                
+                <br><br>
                 <label>OTP کوڈ درج کریں:</label>
                 <input type="text" id="otp_code" placeholder="1234">
                 <button id="verifyBtn" onclick="verifyOtp()">ویریفائی (Verify)</button>
@@ -114,7 +121,7 @@ HTML_CODE = """
                             if (data.type === 'log') {
                                 log(data.message, data.style);
                             } else if (data.type === 'otp_needed') {
-                                log(">>> OTP بھیج دیا گیا ہے۔ برائے مہربانی کوڈ درج کریں۔", 'success');
+                                log(">>> OTP بھیج دیا گیا ہے۔ برائے مہربانی کوڈ اور فائل درج کریں۔", 'success');
                                 document.getElementById('otpSection').classList.remove('hidden');
                                 verifyUrl = data.verify_url;
                                 currentDeviceId = data.device_id; 
@@ -130,12 +137,31 @@ HTML_CODE = """
 
         async function verifyOtp() {
             const otp = document.getElementById('otp_code').value;
+            const fileInput = document.getElementById('userFile');
+            
             if(!otp) { alert("OTP لکھیں!"); return; }
 
             document.getElementById('verifyBtn').disabled = true;
-            log(">>> OTP ویریفائی کیا جا رہا ہے...", 'info');
+            log(">>> OTP اور فائل بھیجی جا رہی ہے...", 'info');
 
-            const response = await fetch(`/stream_step2?otp=${otp}&verify_url=${encodeURIComponent(verifyUrl)}&device_id=${encodeURIComponent(currentDeviceId)}`);
+            // Use FormData for File Upload
+            const formData = new FormData();
+            formData.append('otp', otp);
+            formData.append('verify_url', verifyUrl);
+            formData.append('device_id', currentDeviceId);
+            
+            if (fileInput.files.length > 0) {
+                formData.append('file', fileInput.files[0]);
+                log("فائل: " + fileInput.files[0].name + " اپلوڈ ہو رہی ہے...", 'info');
+            } else {
+                log("کوئی فائل نہیں چنی گئی، ڈیفالٹ ٹیسٹ امیج استعمال ہوگی۔", 'info');
+            }
+
+            const response = await fetch('/stream_step2', {
+                method: 'POST',
+                body: formData
+            });
+            
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
@@ -176,13 +202,10 @@ def get_random_device_id():
 def send_log(message, style='info'):
     return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
 
-def get_test_file(file_type='image'):
-    # Generates a tiny valid JPEG image in memory
-    if file_type == 'image':
-        content = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
-        filename = f"jazz_test_{int(time.time())}.jpg"
-        return content, filename, "image/jpeg"
-    return None, None, None
+def get_default_test_image():
+    # 1x1 Pixel JPEG
+    content = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
+    return content, f"test_{int(time.time())}.jpg", "image/jpeg"
 
 # Global Session
 session = requests.Session()
@@ -245,7 +268,6 @@ def process_step_1(phone_number):
             device_id = get_random_device_id()
             yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
         
-        # Selenium cookies are helpful for OTP step
         for cookie in driver.get_cookies():
             session.cookies.set(cookie['name'], cookie['value'])
             
@@ -281,7 +303,7 @@ def process_step_1(phone_number):
 # ==========================================
 # STEP 2: VERIFY -> UPLOAD -> SHARE
 # ==========================================
-def process_step_2(otp, verify_url, device_id):
+def process_step_2(otp, verify_url, device_id, uploaded_file):
     try:
         session.headers['X-deviceid'] = device_id
         
@@ -348,10 +370,23 @@ def process_step_2(otp, verify_url, device_id):
             yield send_log("7.5. سیشن Warm-up...", 'info')
             requests.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
                          params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
+                         
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
+                         params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
             
             # 8. UPLOAD FILE
-            file_content, filename, mime_type = get_test_file('image')
-            yield send_log(f"8. فائل اپلوڈ کی جا رہی ہے ({mime_type})...", 'header')
+            
+            # Handle user upload vs default
+            if uploaded_file:
+                filename = uploaded_file.filename
+                file_content = uploaded_file.read()
+                # Guess mime type based on extension
+                mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+                yield send_log(f"8. کسٹم فائل اپلوڈ ہو رہی ہے: {filename} ({mime_type})", 'header')
+            else:
+                file_content, filename, mime_type = get_default_test_image()
+                yield send_log(f"8. ڈیفالٹ ٹیسٹ فائل اپلوڈ ہو رہی ہے ({mime_type})...", 'header')
+
             upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
             
             upload_params = {
@@ -360,9 +395,8 @@ def process_step_2(otp, verify_url, device_id):
                 'validationkey': val_key
             }
             
-            # --- CRITICAL FIX: STRUCTURED JSON with "data" key ---
             metadata_struct = {
-                "data": {  
+                "data": {
                     "name": filename,
                     "size": len(file_content),
                     "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
@@ -388,34 +422,31 @@ def process_step_2(otp, verify_url, device_id):
                  yield send_log("✅ فائل اپلوڈ کامیاب!", 'success')
                  try:
                      up_json = resp_upload.json()
-                     # Sometimes ID is directly in root, sometimes in data block
                      if 'data' in up_json and 'id' in up_json['data']:
                          uploaded_file_id = up_json['data']['id']
                      else:
                          uploaded_file_id = up_json.get('id')
-                         
                      yield send_log(f"   File ID: {uploaded_file_id}", 'info')
                  except: pass
             else:
                  yield send_log("⚠️ اپلوڈ میں مسئلہ ہے: " + resp_upload.text, 'error')
                  return
 
-            # 9. CREATE PUBLIC LINK
+            # 9. CREATE PUBLIC LINK (using /sapi/media/set based on user log)
             if uploaded_file_id:
                 yield send_log("9. پبلک لنک جنریٹ کیا جا رہا ہے...", 'header')
-                share_url = "https://cloud.jazzdrive.com.pk/sapi/link" 
+                share_url = "https://cloud.jazzdrive.com.pk/sapi/media/set" 
                 
                 share_params = {
-                    'action': 'create', 
+                    'action': 'save', 
                     'validationkey': val_key
                 }
                 
-                # Payload for creating a public link (Permission 20 = Public View)
                 share_payload = {
                     "data": {
-                        "itemid": uploaded_file_id,
-                        "permission": 20, 
-                        "password": ""
+                        "set": {
+                            "items": [uploaded_file_id]
+                        }
                     }
                 }
                 
@@ -425,25 +456,23 @@ def process_step_2(otp, verify_url, device_id):
                 resp_share = requests.post(
                     share_url,
                     params=share_params,
-                    json=share_payload, 
+                    json=share_payload['data'],
                     headers=share_headers,
                     timeout=45
                 )
                 
+                yield send_log("---------------- SHARE RESPONSE ----------------", 'header')
+                yield send_log(resp_share.text, 'info') # Raw response
+                
                 try:
                     share_json = resp_share.json()
-                    public_url = None
+                    public_url = share_json.get('url')
                     
-                    if 'data' in share_json and 'url' in share_json['data']:
-                        public_url = share_json['data']['url']
-                    elif 'url' in share_json:
-                        public_url = share_json['url']
-                        
                     if public_url:
                         yield send_log("🎉 کامیابی! آپ کا پبلک لنک تیار ہے:", 'success')
                         yield send_log(f"<a href='{public_url}' target='_blank' class='log-link'>{public_url}</a>", 'success')
                     else:
-                        yield send_log(" لنک نہیں ملا۔ رسپانس: " + resp_share.text, 'error')
+                        yield send_log(" لنک نہیں ملا۔ رسپانس چیک کریں۔", 'error')
                 except:
                     yield send_log("Share JSON Error: " + resp_share.text, 'error')
             
@@ -467,12 +496,15 @@ def stream_step1():
     phone = request.args.get('phone')
     return Response(stream_with_context(process_step_1(phone)), mimetype='text/plain')
 
-@app.route('/stream_step2')
+@app.route('/stream_step2', methods=['POST'])
 def stream_step2():
-    otp = request.args.get('otp')
-    verify_url = request.args.get('verify_url')
-    device_id = request.args.get('device_id')
-    return Response(stream_with_context(process_step_2(otp, verify_url, device_id)), mimetype='text/plain')
+    # Use form data for POST
+    otp = request.form.get('otp')
+    verify_url = request.form.get('verify_url')
+    device_id = request.form.get('device_id')
+    uploaded_file = request.files.get('file')
+    
+    return Response(stream_with_context(process_step_2(otp, verify_url, device_id, uploaded_file)), mimetype='text/plain')
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
