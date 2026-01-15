@@ -4,7 +4,7 @@ import requests
 import uuid
 import os
 import io
-import random
+import datetime
 from flask import Flask, Response, request, render_template_string, stream_with_context
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -23,7 +23,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive Upload Fix</title>
+    <title>Jazz Drive - Curl Replicated</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -55,7 +55,7 @@ HTML_CODE = """
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Upload Fix</h1>
+        <h1>Jazz Drive Automation</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -174,13 +174,14 @@ def get_random_device_id():
 def send_log(message, style='info'):
     return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
 
-# A minimal valid JPEG image (1x1 pixel) for testing upload
 def get_test_image():
+    # 1x1 Pixel JPEG
     return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
 
 # Global Session
 session = requests.Session()
 
+# Common headers (without Content-Type, as requests adds it for multipart)
 common_headers = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
     'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
@@ -239,7 +240,6 @@ def process_step_1(phone_number):
             device_id = get_random_device_id()
             yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
         
-        yield send_log("4. سیشن کوکیز منتقل کی جا رہی ہیں...")
         for cookie in driver.get_cookies():
             session.cookies.set(cookie['name'], cookie['value'])
             
@@ -250,17 +250,15 @@ def process_step_1(phone_number):
             return
 
         yield send_log(f"5. API Call: OTP بھیجا جا رہا ہے...")
-        yield send_log(f"   URL: {signup_url}", 'header')
         
         payload = {'enrichment_status': '', 'msisdn': phone_number}
-        
         resp = session.post(signup_url, data=payload, allow_redirects=True)
-        
         verify_url = resp.url
+        
         yield send_log(f"   Status Code: {resp.status_code}")
         
         if "verify.php" in verify_url:
-            yield send_log(f"✔ کامیابی سے Verify پیج پر پہنچ گئے: {verify_url}", 'success')
+            yield send_log(f"✔ کامیابی سے Verify پیج پر پہنچ گئے", 'success')
             yield f"DATA:{json.dumps({'type': 'otp_needed', 'verify_url': verify_url, 'device_id': device_id})}\n"
         else:
             yield send_log(f"❌ غلط ری ڈائریکٹ: {verify_url}", 'error')
@@ -270,7 +268,7 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> TOKEN -> UPLOAD (FIXED)
+# STEP 2: VERIFY -> TOKEN -> UPLOAD (FIXED FOR CURL)
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
@@ -294,6 +292,7 @@ def process_step_2(otp, verify_url, device_id):
         auth_code = qs['code'][0]
         yield send_log(f"✔ Auth Code: {auth_code}", 'success')
         
+        # SAPI LOGIN
         yield send_log("7. ٹوکن جنریٹ کیا جا رہا ہے (Login)...")
         sapi_url = "https://cloud.jazzdrive.com.pk/sapi/login/oauth"
         params = {
@@ -301,6 +300,7 @@ def process_step_2(otp, verify_url, device_id):
             'keytype': 'authorizationcode', 'key': auth_code
         }
         
+        # Login needs standard form encoded header
         headers = session.headers.copy()
         headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
         
@@ -317,9 +317,8 @@ def process_step_2(otp, verify_url, device_id):
             new_jsession = login_json['data'].get('jsessionid')
             
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
-            yield send_log(f"✔ New Session ID: {new_jsession}", 'info')
             
-            # --- HEADERS ---
+            # --- HEADERS CONSTRUCTION ---
             cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
             base_headers = {
@@ -334,6 +333,7 @@ def process_step_2(otp, verify_url, device_id):
                 'Origin': 'https://cloud.jazzdrive.com.pk',
                 'Referer': 'https://cloud.jazzdrive.com.pk/',
                 'Cookie': cookie_string
+                # Note: Content-Type is NOT set here for upload, requests will do it
             }
 
             # 7.5 Warmup
@@ -343,8 +343,8 @@ def process_step_2(otp, verify_url, device_id):
             requests.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
                          params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
             
-            # 8. UPLOAD (FIXED)
-            yield send_log("8. فائل اپلوڈ ٹیسٹ شروع (Correct Data Field)...", 'header')
+            # 8. UPLOAD (EXACTLY MATCHING CURL)
+            yield send_log("8. فائل اپلوڈ ٹیسٹ شروع (Matching CURL)...", 'header')
             upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
             
             upload_params = {
@@ -356,35 +356,32 @@ def process_step_2(otp, verify_url, device_id):
             image_bytes = get_test_image()
             filename = f"test_{int(time.time())}.jpg"
             
-            # --- FIX HERE: Separate Files and Data ---
-            # 'file' key for the binary
-            multipart_files = {
-                'file': (filename, image_bytes, 'image/jpeg')
-            }
-            
-            # 'data' key for the JSON string (THIS IS WHAT COM-1013 WAS MISSING)
+            # JSON Payload like CURL -F 'data={...}'
+            now_iso = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             metadata_struct = {
-                "name": filename,
-                "size": len(image_bytes),
-                "modificationdate": "20260115T180000Z",
-                "contenttype": "image/jpeg"
+                "data": {
+                    "name": filename,
+                    "size": len(image_bytes),
+                    "modificationdate": now_iso,
+                    "contenttype": "image/jpeg"
+                }
             }
             
-            multipart_data = {
-                'data': json.dumps(metadata_struct)
-            }
+            # --- THE FIX: Pass EVERYTHING as 'files' ---
+            # This forces 'requests' to create a multipart body with two parts:
+            # 1. name="data" -> JSON string
+            # 2. name="file" -> Binary file with filename and content-type
             
-            # Header copy WITHOUT Content-Type (requests adds boundary)
-            upload_headers = base_headers.copy()
-            if 'Content-Type' in upload_headers:
-                del upload_headers['Content-Type']
+            multipart_payload = {
+                'data': (None, json.dumps(metadata_struct)), # This matches -F 'data=...'
+                'file': (filename, image_bytes, 'image/jpeg') # This matches -F 'file=@...'
+            }
 
             resp_upload = requests.post(
                 upload_url, 
                 params=upload_params, 
-                files=multipart_files, # File binary here
-                data=multipart_data,   # JSON 'data' field here
-                headers=upload_headers
+                files=multipart_payload, 
+                headers=base_headers
             )
             
             yield send_log("---------------- UPLOAD RESPONSE ----------------", 'header')
