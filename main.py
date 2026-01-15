@@ -22,7 +22,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive Automation (Railway)</title>
+    <title>Jazz Drive Automation (Final Fix)</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -54,7 +54,7 @@ HTML_CODE = """
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Automation (Railway)</h1>
+        <h1>Jazz Drive Automation (Final Fix)</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -177,10 +177,10 @@ def send_log(message, style='info'):
 session = requests.Session()
 
 common_headers = {
-    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36',
-    'sec-ch-ua': '"Chromium";v="139", "Not;A=Brand";v="99"',
-    'sec-ch-ua-mobile': '?1',
-    'sec-ch-ua-platform': '"Android"',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+    'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Linux"',
     'Upgrade-Insecure-Requests': '1'
 }
 session.headers.update(common_headers)
@@ -218,6 +218,7 @@ def process_step_1(phone_number):
             
             cookies = driver.get_cookies()
             for cookie in cookies:
+                # لاگز کے مطابق کوکی کا نام Case Sensitive ہو سکتا ہے، اس لیے ہم احتیاط کر رہے ہیں
                 if 'device' in cookie['name'].lower() or 'deviceid' in cookie['name'].lower():
                     device_id = cookie['value']
                     yield send_log(f"✔ Device ID Found in Cookies: {device_id}", 'success')
@@ -265,22 +266,22 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> TOKEN -> LABELS (FIXED)
+# STEP 2: VERIFY -> TOKEN -> LABELS (FINAL FIX)
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
+        # ہیڈرز میں ڈیوائس آئی ڈی سیٹ کریں
         session.headers['X-deviceid'] = device_id
         
         yield send_log(f"6. API Call: OTP ویریفائی کر رہے ہیں...")
-        yield send_log(f"   Device ID: {device_id}", 'header')
         
         payload = {'otp': otp}
         resp = session.post(verify_url, data=payload, allow_redirects=True)
         
         final_url = resp.url
         yield send_log(f"   Status: {resp.status_code}")
-        yield send_log(f"   Final Redirect: {final_url}", 'header')
         
+        # Extract Code
         parsed = urlparse(final_url)
         qs = parse_qs(parsed.query)
         
@@ -291,7 +292,8 @@ def process_step_2(otp, verify_url, device_id):
         auth_code = qs['code'][0]
         yield send_log(f"✔ Auth Code: {auth_code}", 'success')
         
-        yield send_log("7. ٹوکن جنریٹ کیا جا رہا ہے...")
+        # SAPI LOGIN
+        yield send_log("7. ٹوکن جنریٹ کیا جا رہا ہے (Login)...")
         sapi_url = "https://cloud.jazzdrive.com.pk/sapi/login/oauth"
         params = {
             'action': 'login', 'platform': 'web', 
@@ -310,30 +312,85 @@ def process_step_2(otp, verify_url, device_id):
             return
 
         if 'data' in login_json and 'validationkey' in login_json['data']:
+            # ڈیٹا ایکسٹریکٹ کریں
             val_key = login_json['data']['validationkey']
+            new_jsession = login_json['data'].get('jsessionid')
             
-            # --- COOKIE FIX ---
-            session.cookies.set('validationKey', val_key)
-            if 'jsessionid' in login_json['data']:
-                 session.cookies.set('JSESSIONID', login_json['data']['jsessionid'])
-
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
+            yield send_log(f"✔ New Session ID: {new_jsession}", 'info')
             
+            # ---------------------------------------------------------
+            # CRITICAL STEP: Construct Headers EXACTLY like the Browser
+            # ---------------------------------------------------------
+            
+            # Browser sends this specific cookie string
+            # Notice: validationKey (CamelCase) and JSESSIONID
+            cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
+            
+            auth_headers = {
+                'Host': 'cloud.jazzdrive.com.pk',
+                'Connection': 'keep-alive',
+                'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
+                'sec-ch-ua-platform': '"Linux"',
+                'sec-ch-ua-mobile': '?0',
+                'User-Agent': common_headers['User-Agent'],
+                'X-deviceid': device_id,
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'Accept': '*/*',
+                'Origin': 'https://cloud.jazzdrive.com.pk',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Dest': 'empty',
+                'Referer': 'https://cloud.jazzdrive.com.pk/',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'Accept-Language': 'en-US,en;q=0.9,ur-PK;q=0.8,ur;q=0.7',
+                'Cookie': cookie_string
+            }
+
+            # ---------------------------------------------------------
+            # STEP 7.5: Warm-up Call (Fetch Profile) - AS SEEN IN LOGS
+            # ---------------------------------------------------------
+            yield send_log("7.5. سیشن ایکٹو کرنے کے لیے Profile Fetch کی جا رہی ہے...", 'info')
+            profile_url = "https://cloud.jazzdrive.com.pk/sapi/profile"
+            
+            # URL میں بھی key بھیجنی ہے
+            profile_params = {'action': 'get', 'validationkey': val_key}
+            
+            # یہاں requests.get استعمال کریں گے، manual headers کے ساتھ
+            requests.get(profile_url, params=profile_params, headers=auth_headers)
+            
+            # ---------------------------------------------------------
+            # STEP 8: FINAL CALL - LABELS
+            # ---------------------------------------------------------
             yield send_log("8. ڈیٹا Fetch کیا جا رہا ہے (Labels)...")
             label_url = "https://cloud.jazzdrive.com.pk/sapi/label"
+            
+            # Query Params (action, limit, shared_items, validationkey)
             l_params = {
-                'action': 'get', 'limit': '100', 
-                'shared_items': 'true', 'validationkey': val_key
+                'action': 'get', 
+                'limit': '100', 
+                'shared_items': 'true', 
+                'validationkey': val_key # URL requires validationkey (lowercase k)
             }
+            
             l_json = {"data": {"types": ["file"], "origin": ["omh", "shared_label"]}}
             
-            headers['Content-Type'] = 'application/json;charset=UTF-8'
-            headers['Origin'] = 'https://cloud.jazzdrive.com.pk'
-            
-            resp_final = session.post(label_url, params=l_params, json=l_json['data'], headers=headers)
+            # JSON Content Type اپڈیٹ کریں
+            final_headers = auth_headers.copy()
+            final_headers['Content-Type'] = 'application/json;charset=UTF-8'
+
+            # فائنل ریکویسٹ
+            resp_final = requests.post(label_url, params=l_params, json=l_json['data'], headers=final_headers)
             
             yield send_log("---------------- RESPONSE ----------------", 'header')
+            
+            if "PAPI-0000" in resp_final.text:
+                 yield send_log("❌ PAPI Error still occurred. Check headers.", 'error')
+            else:
+                 yield send_log("SUCCESS!", 'success')
+                 
             yield send_log(resp_final.text, 'info')
+            
             yield f"DATA:{json.dumps({'type': 'finished'})}\n"
             
         else:
