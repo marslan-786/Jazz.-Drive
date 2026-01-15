@@ -4,3 +4,6 @@ uvicorn
 requests
 playwright
 python-multipart
+selenium
+webdriver-manager
+gunicorn
