@@ -23,7 +23,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive - Curl Replicated</title>
+    <title>Jazz Drive - Auto Share</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -50,12 +50,13 @@ HTML_CODE = """
         .log-success { color: #00ff00; }
         .log-error { color: #ff4444; }
         .log-header { color: #ffff00; font-size: 12px; }
+        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Automation</h1>
+        <h1>Jazz Drive Auto Share</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -181,7 +182,6 @@ def get_test_image():
 # Global Session
 session = requests.Session()
 
-# Common headers (without Content-Type, as requests adds it for multipart)
 common_headers = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
     'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
@@ -268,7 +268,7 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> TOKEN -> UPLOAD (FIXED FOR CURL)
+# STEP 2: VERIFY -> UPLOAD -> SHARE
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
@@ -300,7 +300,6 @@ def process_step_2(otp, verify_url, device_id):
             'keytype': 'authorizationcode', 'key': auth_code
         }
         
-        # Login needs standard form encoded header
         headers = session.headers.copy()
         headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
         
@@ -318,7 +317,7 @@ def process_step_2(otp, verify_url, device_id):
             
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
             
-            # --- HEADERS CONSTRUCTION ---
+            # --- HEADERS ---
             cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
             base_headers = {
@@ -333,7 +332,6 @@ def process_step_2(otp, verify_url, device_id):
                 'Origin': 'https://cloud.jazzdrive.com.pk',
                 'Referer': 'https://cloud.jazzdrive.com.pk/',
                 'Cookie': cookie_string
-                # Note: Content-Type is NOT set here for upload, requests will do it
             }
 
             # 7.5 Warmup
@@ -343,8 +341,10 @@ def process_step_2(otp, verify_url, device_id):
             requests.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
                          params={'action': 'get', 'validationkey': val_key}, headers=base_headers)
             
-            # 8. UPLOAD (EXACTLY MATCHING CURL)
-            yield send_log("8. فائل اپلوڈ ٹیسٹ شروع (Matching CURL)...", 'header')
+            # ----------------------------------------
+            # 8. UPLOAD FILE
+            # ----------------------------------------
+            yield send_log("8. فائل اپلوڈ کی جا رہی ہے...", 'header')
             upload_url = "https://cloud.jazzdrive.com.pk/sapi/upload"
             
             upload_params = {
@@ -356,25 +356,16 @@ def process_step_2(otp, verify_url, device_id):
             image_bytes = get_test_image()
             filename = f"test_{int(time.time())}.jpg"
             
-            # JSON Payload like CURL -F 'data={...}'
-            now_iso = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
             metadata_struct = {
-                "data": {
-                    "name": filename,
-                    "size": len(image_bytes),
-                    "modificationdate": now_iso,
-                    "contenttype": "image/jpeg"
-                }
+                "name": filename,
+                "size": len(image_bytes),
+                "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+                "contenttype": "image/jpeg"
             }
             
-            # --- THE FIX: Pass EVERYTHING as 'files' ---
-            # This forces 'requests' to create a multipart body with two parts:
-            # 1. name="data" -> JSON string
-            # 2. name="file" -> Binary file with filename and content-type
-            
             multipart_payload = {
-                'data': (None, json.dumps(metadata_struct)), # This matches -F 'data=...'
-                'file': (filename, image_bytes, 'image/jpeg') # This matches -F 'file=@...'
+                'data': (None, json.dumps(metadata_struct)), 
+                'file': (filename, image_bytes, 'image/jpeg')
             }
 
             resp_upload = requests.post(
@@ -384,13 +375,62 @@ def process_step_2(otp, verify_url, device_id):
                 headers=base_headers
             )
             
-            yield send_log("---------------- UPLOAD RESPONSE ----------------", 'header')
-            yield send_log(resp_upload.text, 'info')
-            
+            uploaded_file_id = None
             if '"success":"Media uploaded successfully"' in resp_upload.text:
-                 yield send_log("✅ مبارک ہو! فائل کامیابی سے اپلوڈ ہو گئی۔", 'success')
+                 yield send_log("✅ فائل اپلوڈ کامیاب!", 'success')
+                 try:
+                     up_json = resp_upload.json()
+                     uploaded_file_id = up_json.get('id')
+                     yield send_log(f"   File ID: {uploaded_file_id}", 'info')
+                 except: pass
             else:
-                 yield send_log("⚠️ اپلوڈ میں مسئلہ ہے، رسپانس چیک کریں۔", 'error')
+                 yield send_log("⚠️ اپلوڈ میں مسئلہ ہے: " + resp_upload.text, 'error')
+                 return
+
+            # ----------------------------------------
+            # 9. CREATE SHARE LINK (Public)
+            # ----------------------------------------
+            if uploaded_file_id:
+                yield send_log("9. پبلک لنک جنریٹ کیا جا رہا ہے (Create Set)...", 'header')
+                share_url = "https://cloud.jazzdrive.com.pk/sapi/media/set"
+                
+                share_params = {
+                    'action': 'save',
+                    'validationkey': val_key
+                }
+                
+                share_payload = {
+                    "data": {
+                        "set": {
+                            "items": [uploaded_file_id] # ID from upload response
+                        }
+                    }
+                }
+                
+                # Headers update for JSON body
+                share_headers = base_headers.copy()
+                share_headers['Content-Type'] = 'application/json;charset=UTF-8'
+                
+                resp_share = requests.post(
+                    share_url,
+                    params=share_params,
+                    json=share_payload['data'],
+                    headers=share_headers
+                )
+                
+                yield send_log("---------------- SHARE RESPONSE ----------------", 'header')
+                yield send_log(resp_share.text, 'info')
+                
+                try:
+                    share_json = resp_share.json()
+                    public_url = share_json.get('url')
+                    if public_url:
+                        yield send_log("🎉 کامیابی! آپ کا پبلک لنک تیار ہے:", 'success')
+                        yield send_log(f"<a href='{public_url}' target='_blank' class='log-link'>{public_url}</a>", 'success')
+                    else:
+                        yield send_log(" لنک نہیں ملا۔ رسپانس چیک کریں۔", 'error')
+                except:
+                    pass
             
             yield f"DATA:{json.dumps({'type': 'finished'})}\n"
             
