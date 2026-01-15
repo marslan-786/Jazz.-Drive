@@ -11,7 +11,7 @@ from playwright.async_api import async_playwright
 
 app = FastAPI()
 
-# --- Database (In-Memory) ---
+# --- In-Memory Database ---
 # یہ ڈیٹا تب تک رہے گا جب تک سرور چل رہا ہے
 db = {}
 
@@ -21,12 +21,12 @@ HEADERS = {
     "Referer": "https://jazzdrive.com.pk/"
 }
 
-# --- HTML UI Template ---
+# --- HTML Template (with Persistence Fix) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Jazz Drive Bot (Final Fix)</title>
+    <title>Jazz Drive Bot (Stable)</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { background-color: #0d1117; color: #e6edf3; font-family: monospace; padding: 20px; }
@@ -38,37 +38,37 @@ HTML_TEMPLATE = """
         button:disabled { background: #30363d; cursor: not-allowed; }
         
         #monitor { 
-            width: 100%; min-height: 350px; background: #000; border: 2px solid #3fb950; 
+            width: 100%; min-height: 400px; background: #000; border: 2px solid #3fb950; 
             display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 10px;
         }
-        #monitor img { max-width: 100%; max-height: 450px; border: 1px solid #333; }
-        .status-bar { width: 100%; background: #21262d; padding: 5px; text-align: center; font-size: 12px; color: #8b949e; }
+        #monitor img { max-width: 100%; max-height: 500px; border: 1px solid #333; }
+        .status-bar { width: 100%; background: #21262d; padding: 5px; text-align: center; font-size: 14px; color: #f0f6fc; border-bottom: 1px solid #30363d; }
         
-        #logs { height: 150px; overflow-y: scroll; background: #0d1117; padding: 10px; border: 1px solid #30363d; font-size: 12px; color: #58a6ff; margin-top: 10px; }
+        #logs { height: 200px; overflow-y: scroll; background: #0d1117; padding: 10px; border: 1px solid #30363d; font-size: 12px; color: #58a6ff; margin-top: 10px; }
         .hidden { display: none; }
-        .error-box { background: #5a1e1e; color: #ffadad; padding: 10px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #ff0000; text-align: center; font-weight: bold; }
+        .error-msg { color: #ff7b72; font-weight: bold; margin-bottom: 10px; border: 1px solid #ff7b72; padding: 10px; border-radius: 4px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🤖 Jazz Bot <button onclick="resetApp()" style="float:right; background:#da3633; font-size:12px; padding:5px 10px;">Reset</button></h2>
+        <h2>🤖 Jazz Bot Pro <button onclick="fullReset()" style="float:right; background:#da3633; font-size:12px; padding:5px 10px;">Clear Data</button></h2>
         
         <div class="panel" id="step1">
             <h3>Step 1: Start Session</h3>
             <input type="text" id="phone" value="03027665767" placeholder="030xxxxxxxxx">
-            <button onclick="startStep1()" id="btn1">Send OTP</button>
+            <button onclick="startStep1()" id="btn1">Start Browser</button>
         </div>
 
         <div class="panel hidden" id="step2">
             <h3>Step 2: Enter OTP</h3>
-            <div id="otp-error" class="error-box hidden">❌ Invalid OTP! Jazz sent a new one. Try again.</div>
-            <input type="text" id="otp" placeholder="Enter Code (Auto-Submit)">
-            <button onclick="startStep2()" id="btn2">Verify Login</button>
+            <div id="otp-error" class="error-msg hidden">❌ Invalid OTP! Check SMS & Enter New Code.</div>
+            <input type="text" id="otp" placeholder="Enter Code (Wait for Input Field)">
+            <button onclick="startStep2()" id="btn2">Type OTP & Login</button>
         </div>
 
         <div class="panel hidden" id="step3">
             <h3>Step 3: Upload File</h3>
-            <div style="color:#3fb950; margin-bottom:10px;">✅ LOGIN SUCCESSFUL! Keys Saved.</div>
+            <div style="color:#3fb950; margin-bottom:10px;">✅ LOGIN SUCCESSFUL! Session Active.</div>
             <input type="file" id="fileInput">
             <button onclick="uploadFile()" id="btn3">Upload & Get Link</button>
             <p id="final-link" style="color: #58a6ff; margin-top:10px; word-break: break-all; font-size: 14px;"></p>
@@ -76,8 +76,8 @@ HTML_TEMPLATE = """
 
         <div id="live-area" class="hidden">
             <div id="monitor">
-                <img id="live-img" src="" alt="Connecting...">
                 <div class="status-bar" id="live-status">Initializing...</div>
+                <img id="live-img" src="" alt="Waiting for screenshot...">
             </div>
             <div id="logs"></div>
         </div>
@@ -87,16 +87,23 @@ HTML_TEMPLATE = """
         let pollInterval = null;
         let currentKey = localStorage.getItem('session_key') || "";
 
-        function resetApp() { localStorage.clear(); window.location.reload(); }
+        function fullReset() { localStorage.clear(); window.location.reload(); }
 
+        // --- PERSISTENCE LOGIC (Re-Load Data on Refresh) ---
         window.onload = function() {
-            if(localStorage.getItem('step') === '2') {
+            const savedStep = localStorage.getItem('step');
+            
+            // If session exists, start polling immediately to recover logs/images
+            if(currentKey) {
+                document.getElementById('live-area').classList.remove('hidden');
+                startPolling(currentKey);
+            }
+
+            if(savedStep === '2') {
                 document.getElementById('step1').classList.add('hidden');
                 document.getElementById('step2').classList.remove('hidden');
-                document.getElementById('live-area').classList.remove('hidden');
-                if(currentKey) startPolling(currentKey);
             }
-            if(localStorage.getItem('step') === '3') {
+            if(savedStep === '3') {
                 document.getElementById('step1').classList.add('hidden');
                 document.getElementById('step2').classList.add('hidden');
                 document.getElementById('step3').classList.remove('hidden');
@@ -105,6 +112,7 @@ HTML_TEMPLATE = """
 
         async function startStep1() {
             const phone = document.getElementById('phone').value;
+            // Create a unique key for this session
             currentKey = "sess_" + Date.now();
             localStorage.setItem('session_key', currentKey);
 
@@ -137,20 +145,25 @@ HTML_TEMPLATE = """
                     const res = await fetch(`/api/status/${key}`);
                     const data = await res.json();
                     
+                    // Recover Logs
                     if(data.logs) {
                         const l = document.getElementById('logs');
                         l.innerHTML = data.logs.map(x => `<div>> ${x}</div>`).join('');
                         l.scrollTop = l.scrollHeight;
                     }
+                    // Recover Image
                     if(data.screenshot) {
                         document.getElementById('live-img').src = "data:image/jpeg;base64," + data.screenshot;
                         document.getElementById('live-status').innerText = data.last_action;
                     }
 
+                    // Transitions
                     if(data.stage === 'step1_complete') {
-                        clearInterval(pollInterval);
-                        localStorage.setItem('step', '2');
-                        location.reload();
+                        // Don't stop polling, just update UI
+                        if(localStorage.getItem('step') !== '2') {
+                            localStorage.setItem('step', '2');
+                            location.reload(); 
+                        }
                     }
 
                     if(data.stage === 'login_success') {
@@ -160,18 +173,14 @@ HTML_TEMPLATE = """
                         location.reload();
                     }
 
-                    // --- RETRY LOGIC (یہ ہے وہ چیز جو آپ چاہتے ہیں) ---
                     if(data.stage === 'retry_otp') {
-                        clearInterval(pollInterval);
                         document.getElementById('btn2').disabled = false;
                         document.getElementById('otp').value = ""; 
                         document.getElementById('otp-error').classList.remove('hidden');
-                        // Sound alert if needed
-                        alert("Invalid OTP! Check SMS for new code.");
                     }
                     
-                } catch(e) { console.log(e); }
-            }, 1000);
+                } catch(e) { console.log("Polling...", e); }
+            }, 1500);
         }
 
         async function uploadFile() {
@@ -207,61 +216,108 @@ class BrowserReq(BaseModel):
     otp: str = ""
     session_key: str
 
-async def task_step1(phone: str, key: str):
-    db[key] = {"logs": ["Starting Browser..."], "screenshot": None, "stage": "running"}
+# Helper for Logs and Screenshots
+async def update_db(key, log_msg=None, page=None, action_name=None):
+    if key not in db: db[key] = {"logs": [], "screenshot": None, "stage": "init"}
     
-    def log(m): db[key]["logs"].append(m); print(f"[{key}] {m}")
-    async def shot(p, a):
-        try: db[key]["screenshot"] = base64.b64encode(await p.screenshot(type='jpeg', quality=30)).decode(); db[key]["last_action"] = a
-        except: pass
+    if log_msg:
+        print(f"[{key}] {log_msg}")
+        db[key]["logs"].append(log_msg)
+    
+    if page and action_name:
+        try:
+            # Capture Screenshot
+            b64 = base64.b64encode(await page.screenshot(type='jpeg', quality=40)).decode()
+            db[key]["screenshot"] = b64
+            db[key]["last_action"] = action_name
+        except Exception as e:
+            print(f"Screenshot Error: {e}")
+
+async def task_step1(phone: str, key: str):
+    await update_db(key, "Launching Browser...")
+    db[key]["stage"] = "running"
 
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-            page = await browser.new_page(user_agent=HEADERS["User-Agent"])
+            # موبائل ویو پورٹ سیٹ کریں تاکہ بٹن سامنے نظر آئے
+            context = await browser.new_context(
+                user_agent=HEADERS["User-Agent"],
+                viewport={"width": 375, "height": 812}
+            )
+            page = await context.new_page()
 
-            log("Opening Jazz Cloud...")
+            # 1. Open URL
+            await update_db(key, "Opening Jazz Cloud...", page, "Init")
             await page.goto("https://cloud.jazzdrive.com.pk", timeout=60000)
-            await shot(page, "Loaded Cloud")
+            
+            # 2. WAIT FOR FULL LOAD (Important Fix)
+            await update_db(key, "Waiting for Page Load...", page, "Loading...")
+            await page.wait_for_load_state("networkidle") # جب تک نیٹ ورک خاموش نہ ہو
+            await asyncio.sleep(3) # مزید 3 سیکنڈ احتیاطاً
+            await update_db(key, "Page Fully Loaded", page, "1. Page Loaded")
 
-            # Input Number
-            log(f"Typing Number: {phone}")
+            # 3. Type Number
+            await update_db(key, f"Typing Number: {phone}")
             try:
-                # Try finding input by type or generic input
-                await page.wait_for_selector('input', timeout=30000)
-                await page.type('input[type="tel"]', phone)
-            except:
-                await page.type('input', phone)
+                # متعدد سلیکٹرز ٹرائی کریں
+                if await page.locator('input[type="tel"]').count() > 0:
+                    await page.fill('input[type="tel"]', phone)
+                elif await page.locator('input[name="msisdn"]').count() > 0:
+                    await page.fill('input[name="msisdn"]', phone)
+                else:
+                    await page.fill('input', phone)
+            except Exception as e:
+                await update_db(key, f"Input Error: {e}")
+
+            await asyncio.sleep(1)
+            await update_db(key, "Number Typed", page, "2. Number Entered")
+
+            # 4. Find & Click Subscribe Button
+            await update_db(key, "Clicking Subscribe Button...")
             
-            await shot(page, "Number Typed")
-            await page.keyboard.press('Enter')
+            # بٹن کے مختلف نام ٹرائی کریں
+            clicked = False
+            selectors = ['button:has-text("Subscribe")', 'input[type="submit"]', 'button[type="submit"]', '.btn-primary']
             
-            log("Waiting for Verify Page...")
+            for sel in selectors:
+                if await page.locator(sel).count() > 0:
+                    await page.click(sel)
+                    clicked = True
+                    break
+            
+            if not clicked:
+                # اگر کوئی خاص بٹن نہیں ملا تو پہلا بٹن دبا دو
+                await page.click('button')
+            
+            await update_db(key, "Button Clicked", page, "3. Button Clicked")
+
+            # 5. Wait for Redirect to Verify Page
+            await update_db(key, "Waiting for Redirect...")
             await page.wait_for_url("**verify.php**", timeout=60000)
             
-            # Extract ID
+            # Capture ID
             real_id = page.url.split("id=")[1].split("&")[0]
             db[key]["real_jazz_id"] = real_id
             db[key]["stage"] = "step1_complete"
-            log(f"ID Captured: {real_id}")
             
+            await update_db(key, f"Redirected! ID Captured.", page, "4. Verify Page Reached")
             await browser.close()
+
     except Exception as e:
-        db[key]["stage"] = "failed"; db[key]["error"] = str(e)
+        db[key]["stage"] = "failed"
+        db[key]["error"] = str(e)
+        await update_db(key, f"Fatal Error: {str(e)}")
 
 
 async def task_step2(otp: str, key: str):
     real_id = db.get(key, {}).get("real_jazz_id")
-    if not real_id: return
-    
-    # لاگز ری سیٹ کریں
-    db[key]["logs"] = [f"Trying OTP: {otp}"]
+    if not real_id:
+        await update_db(key, "Error: Session ID Lost. Restart Step 1.")
+        return
+
+    await update_db(key, f"Starting Verification on ID: {real_id}...")
     db[key]["stage"] = "running"
-    
-    def log(m): db[key]["logs"].append(m); print(f"[{key}] {m}")
-    async def shot(p, a):
-        try: db[key]["screenshot"] = base64.b64encode(await p.screenshot(type='jpeg', quality=40)).decode(); db[key]["last_action"] = a
-        except: pass
 
     try:
         async with async_playwright() as p:
@@ -269,78 +325,56 @@ async def task_step2(otp: str, key: str):
             context = await browser.new_context(user_agent=HEADERS["User-Agent"])
             page = await context.new_page()
 
-            # Go to Verify Page
+            # 1. Open Verify Page
             url = f"https://jazzdrive.com.pk/verify.php?id={real_id}"
-            log("Opening Verify Page...")
             await page.goto(url, timeout=45000)
-            await shot(page, "Verify Page")
+            await page.wait_for_load_state("networkidle")
+            await update_db(key, "Verify Page Loaded", page, "5. Ready for OTP")
 
-            # Type OTP (Slowly for Auto-Submit)
-            log(f"Typing OTP: {otp}...")
-            try:
-                await page.type('input[name="otp"]', otp, delay=200) # 200ms delay per key
-            except:
-                await page.type('input', otp, delay=200)
+            # 2. Type OTP
+            await update_db(key, "Typing OTP (Auto-Submit)...")
+            await page.type('input', otp, delay=200) # ٹائپ کرتے ہوئے تصویر
+            await update_db(key, "OTP Entered", page, "6. OTP Typed")
             
-            await shot(page, "OTP Entered")
-            
-            # Wait for Result (Redirect OR Error Message)
-            log("Waiting for response...")
+            # 3. Wait for Result
+            await update_db(key, "Waiting for Dashboard...")
             try:
-                # 1. SUCCESS: Redirect to Dashboard
-                await page.wait_for_url("https://cloud.jazzdrive.com.pk/**", timeout=8000) # 8 seconds wait
-                log("Redirect Success! Grabbing Keys...")
+                # A. Success Case
+                await page.wait_for_url("https://cloud.jazzdrive.com.pk/**", timeout=10000)
+                await update_db(key, "Redirect Success!", page, "7. Login Success")
                 
-                # Get Keys
+                # Extract Keys
                 cookies = await context.cookies()
                 c_dict = {c['name']: c['value'] for c in cookies}
-                
-                # Scan URL for key
                 if "validationkey=" in page.url.lower():
                     from urllib.parse import urlparse, parse_qs
                     qs = parse_qs(urlparse(page.url).query)
                     for k,v in qs.items():
                          if k.lower() == 'validationkey': c_dict['validationKey'] = v[0]
                 
-                if c_dict.get('validationKey') or c_dict.get('validationkey'):
-                    db[key]["auth_data"] = c_dict
-                    db[key]["stage"] = "login_success"
-                else:
-                    db[key]["error"] = "Redirected but Key Missing"
-                    db[key]["stage"] = "failed"
+                db[key]["auth_data"] = c_dict
+                db[key]["stage"] = "login_success"
 
             except:
-                # 2. FAILURE: Timeout implies we are stuck on Verify Page
-                log("No Redirect. Checking for Error Messages...")
-                await shot(page, "Stuck/Error")
+                # B. Failure/Retry Case
+                await update_db(key, "No Redirect. Checking Errors...", page, "8. Stuck/Error")
                 
-                # Read text from page
+                # Check text for "Invalid"
                 content = await page.inner_text("body")
-                content_lower = content.lower()
-                
-                # Keywords for Invalid OTP
-                error_keywords = ["invalid", "incorrect", "wrong", "mismatch", "failed", "error"]
-                
-                found = False
-                for kw in error_keywords:
-                    if kw in content_lower:
-                        log(f"Detected Error: '{kw}'")
-                        db[key]["stage"] = "retry_otp" # Trigger Retry in Frontend
-                        found = True
-                        break
-                
-                if not found:
-                    # اگر کچھ نہیں ملا، پھر بھی اگر ہم verify.php پر ہیں تو مطلب OTP غلط ہی ہے
-                    if "verify.php" in page.url:
-                        log("Still on Verify Page -> Assuming Invalid OTP")
-                        db[key]["stage"] = "retry_otp"
-                    else:
-                        db[key]["stage"] = "failed"
-                        db[key]["error"] = "Unknown Error"
+                if any(x in content.lower() for x in ["invalid", "incorrect", "wrong", "failed"]):
+                    await update_db(key, "DETECTED: Invalid OTP Error")
+                    db[key]["stage"] = "retry_otp"
+                elif "verify.php" in page.url:
+                    await update_db(key, "Still on Verify Page -> Assuming Invalid OTP")
+                    db[key]["stage"] = "retry_otp"
+                else:
+                    db[key]["stage"] = "failed"
+                    db[key]["error"] = "Unknown Error"
 
             await browser.close()
     except Exception as e:
-        db[key]["stage"] = "failed"; db[key]["error"] = str(e)
+        db[key]["stage"] = "failed"
+        db[key]["error"] = str(e)
 
 
 # --- Routes ---
@@ -367,13 +401,13 @@ async def up(file: UploadFile = File(...), cookies_json: str = Form(...)):
         v_key = cookies.get('validationKey') or cookies.get('validationkey')
         session = requests.Session(); session.cookies.update(cookies)
         
-        # Upload
-        files = {'data': (None, json.dumps({"data":{"name":file.filename,"size":0,"modificationdate":"20250101"}}), 'application/json'), 'file': (file.filename, await file.read(), file.content_type)}
-        r1 = session.post("https://cloud.jazzdrive.com.pk/sapi/upload", params={"action":"save","acceptasynchronous":"true","validationkey":v_key}, files=files, headers=HEADERS)
+        ts = str(int(asyncio.get_event_loop().time()))
+        files = {'data': (None, json.dumps({"data":{"name":file.filename,"size":0,"modificationdate":ts,"contenttype":file.content_type}}), 'application/json'), 'file': (file.filename, await file.read(), file.content_type)}
         
-        # Get Link
+        r1 = session.post("https://cloud.jazzdrive.com.pk/sapi/upload", params={"action":"save","acceptasynchronous":"true","validationkey":v_key}, files=files, headers=HEADERS)
         fid = r1.json()['id']
         r2 = session.post("https://cloud.jazzdrive.com.pk/sapi/media", params={"action":"get","origin":"omh,dropbox","validationkey":v_key}, json={"data":{"ids":[fid],"fields":["url"]}}, headers=HEADERS)
+        
         return {"status":"success", "jazz_link":r2.json()['data']['media'][0]['url']}
     except Exception as e: return {"status":"error", "message":str(e)}
 
