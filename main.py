@@ -5,6 +5,7 @@ import uuid
 import os
 import io
 import datetime
+import mimetypes
 from flask import Flask, Response, request, render_template_string, stream_with_context
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -15,7 +16,7 @@ from urllib.parse import urlparse, parse_qs
 app = Flask(__name__)
 
 # ==========================================
-# HTML TEMPLATE
+# HTML TEMPLATE (Frontend)
 # ==========================================
 HTML_CODE = """
 <!DOCTYPE html>
@@ -23,7 +24,7 @@ HTML_CODE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jazz Drive - Auto Share (Final)</title>
+    <title>Jazz Drive - Auto Upload & Share</title>
     <style>
         body { background-color: #1e1e1e; color: #fff; font-family: 'Courier New', monospace; margin: 0; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -49,14 +50,14 @@ HTML_CODE = """
         .log-info { color: #00ffff; }
         .log-success { color: #00ff00; }
         .log-error { color: #ff4444; }
-        .log-header { color: #ffff00; font-size: 12px; }
-        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; cursor: pointer; }
+        .log-header { color: #ffff00; font-size: 12px; font-weight: bold; margin-top: 10px; display: block; }
+        .log-link { color: #ffff00; font-weight: bold; text-decoration: underline; word-break: break-all; }
         .hidden { display: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Jazz Drive Auto Share</h1>
+        <h1>Jazz Drive Auto (Upload & Share)</h1>
         
         <div class="control-panel">
             <label>موبائل نمبر (0300...):</label>
@@ -176,10 +177,11 @@ def send_log(message, style='info'):
     return f"DATA:{json.dumps({'type': 'log', 'message': message, 'style': style})}\n"
 
 def get_test_file(file_type='image'):
-    # آپ یہاں فائل ٹائپ بدل سکتے ہیں (text, html, image)
+    # Generates a tiny valid JPEG image in memory
     if file_type == 'image':
         content = b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xdb\x00C\x01\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xc0\x00\x11\x08\x00\x01\x00\x01\x03\x01"\x00\x02\x11\x01\x03\x11\x01\xff\xc4\x00\x15\x00\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xff\xc4\x00\x14\x10\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xc4\x00\x14\x11\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xda\x00\x0c\x03\x01\x00\x02\x11\x03\x11\x00?\x00\xb2\xc0\x07\xff\xd9'
-        return content, f"test_{int(time.time())}.jpg", "image/jpeg"
+        filename = f"jazz_test_{int(time.time())}.jpg"
+        return content, filename, "image/jpeg"
     return None, None, None
 
 # Global Session
@@ -229,7 +231,7 @@ def process_step_1(phone_number):
             for cookie in cookies:
                 if 'device' in cookie['name'].lower() or 'deviceid' in cookie['name'].lower():
                     device_id = cookie['value']
-                    yield send_log(f"✔ Device ID Found in Cookies: {device_id}", 'success')
+                    yield send_log(f"✔ Device ID Found: {device_id}", 'success')
             
             if "signup.php" in current_url and "id=" in current_url:
                 signup_url = current_url
@@ -243,6 +245,7 @@ def process_step_1(phone_number):
             device_id = get_random_device_id()
             yield send_log(f"⚠ Device ID نہیں ملی، رینڈم جنریٹ کر دی: {device_id}", 'info')
         
+        # Selenium cookies are helpful for OTP step
         for cookie in driver.get_cookies():
             session.cookies.set(cookie['name'], cookie['value'])
             
@@ -254,7 +257,6 @@ def process_step_1(phone_number):
 
         yield send_log(f"5. API Call: OTP بھیجا جا رہا ہے...")
         
-        # Referer header is safer
         session.headers['Referer'] = target_url
         payload = {'enrichment_status': '', 'msisdn': phone_number}
         
@@ -277,7 +279,7 @@ def process_step_1(phone_number):
         yield f"DATA:{json.dumps({'type': 'error', 'message': str(e)})}\n"
 
 # ==========================================
-# STEP 2: VERIFY -> UPLOAD -> SHARE (MANUAL FIX)
+# STEP 2: VERIFY -> UPLOAD -> SHARE
 # ==========================================
 def process_step_2(otp, verify_url, device_id):
     try:
@@ -309,10 +311,9 @@ def process_step_2(otp, verify_url, device_id):
             'keytype': 'authorizationcode', 'key': auth_code
         }
         
-        headers = session.headers.copy()
-        headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+        session.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
         
-        resp_login = session.get(sapi_url, params=params, headers=headers, timeout=45)
+        resp_login = session.get(sapi_url, params=params, timeout=45)
         
         try:
             login_json = resp_login.json()
@@ -326,7 +327,7 @@ def process_step_2(otp, verify_url, device_id):
             
             yield send_log(f"✔ Validation Key: {val_key}", 'success')
             
-            # --- MANUAL HEADERS (The Success Method) ---
+            # --- MANUAL HEADERS CONSTRUCTION ---
             cookie_string = f"JSESSIONID={new_jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
             
             manual_headers = {
@@ -344,11 +345,8 @@ def process_step_2(otp, verify_url, device_id):
             }
 
             # 7.5 Warmup
-            yield send_log("7.5. سیشن Warm-up (Manual Mode)...", 'info')
+            yield send_log("7.5. سیشن Warm-up...", 'info')
             requests.get("https://cloud.jazzdrive.com.pk/sapi/system/information", 
-                         params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
-                         
-            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile", 
                          params={'action': 'get', 'validationkey': val_key}, headers=manual_headers, timeout=30)
             
             # 8. UPLOAD FILE
@@ -362,11 +360,14 @@ def process_step_2(otp, verify_url, device_id):
                 'validationkey': val_key
             }
             
+            # --- CRITICAL FIX: STRUCTURED JSON with "data" key ---
             metadata_struct = {
-                "name": filename,
-                "size": len(file_content),
-                "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
-                "contenttype": mime_type
+                "data": {  
+                    "name": filename,
+                    "size": len(file_content),
+                    "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+                    "contenttype": mime_type
+                }
             }
             
             multipart_payload = {
@@ -374,12 +375,11 @@ def process_step_2(otp, verify_url, device_id):
                 'file': (filename, file_content, mime_type)
             }
 
-            # Using pure requests.post + manual headers
             resp_upload = requests.post(
                 upload_url, 
                 params=upload_params, 
                 files=multipart_payload,
-                headers=manual_headers,
+                headers=manual_headers, 
                 timeout=120
             )
             
@@ -388,55 +388,64 @@ def process_step_2(otp, verify_url, device_id):
                  yield send_log("✅ فائل اپلوڈ کامیاب!", 'success')
                  try:
                      up_json = resp_upload.json()
-                     uploaded_file_id = up_json.get('id')
+                     # Sometimes ID is directly in root, sometimes in data block
+                     if 'data' in up_json and 'id' in up_json['data']:
+                         uploaded_file_id = up_json['data']['id']
+                     else:
+                         uploaded_file_id = up_json.get('id')
+                         
                      yield send_log(f"   File ID: {uploaded_file_id}", 'info')
                  except: pass
             else:
                  yield send_log("⚠️ اپلوڈ میں مسئلہ ہے: " + resp_upload.text, 'error')
                  return
 
-            # ----------------------------------------
-            # 9. CREATE SHARE LINK (Integrated)
-            # ----------------------------------------
+            # 9. CREATE PUBLIC LINK
             if uploaded_file_id:
                 yield send_log("9. پبلک لنک جنریٹ کیا جا رہا ہے...", 'header')
-                share_url = "https://cloud.jazzdrive.com.pk/sapi/media/set"
+                share_url = "https://cloud.jazzdrive.com.pk/sapi/link" 
                 
                 share_params = {
-                    'action': 'save',
+                    'action': 'create', 
                     'validationkey': val_key
                 }
                 
+                # Payload for creating a public link (Permission 20 = Public View)
                 share_payload = {
                     "data": {
-                        "set": {
-                            "items": [uploaded_file_id]
-                        }
+                        "itemid": uploaded_file_id,
+                        "permission": 20, 
+                        "password": ""
                     }
                 }
                 
-                # Headers for Share (JSON Content Type needed)
                 share_headers = manual_headers.copy()
                 share_headers['Content-Type'] = 'application/json;charset=UTF-8'
                 
                 resp_share = requests.post(
                     share_url,
                     params=share_params,
-                    json=share_payload['data'],
+                    json=share_payload, 
                     headers=share_headers,
                     timeout=45
                 )
                 
                 try:
                     share_json = resp_share.json()
-                    public_url = share_json.get('url')
+                    public_url = None
+                    
+                    if 'data' in share_json and 'url' in share_json['data']:
+                        public_url = share_json['data']['url']
+                    elif 'url' in share_json:
+                        public_url = share_json['url']
+                        
                     if public_url:
                         yield send_log("🎉 کامیابی! آپ کا پبلک لنک تیار ہے:", 'success')
                         yield send_log(f"<a href='{public_url}' target='_blank' class='log-link'>{public_url}</a>", 'success')
                     else:
-                        yield send_log(" لنک نہیں ملا۔ رسپانس چیک کریں:" + resp_share.text, 'error')
+                        yield send_log(" لنک نہیں ملا۔ رسپانس: " + resp_share.text, 'error')
                 except:
-                    yield send_log("Share Response Error: " + resp_share.text, 'error')
+                    yield send_log("Share JSON Error: " + resp_share.text, 'error')
             
             yield f"DATA:{json.dumps({'type': 'finished'})}\n"
             
