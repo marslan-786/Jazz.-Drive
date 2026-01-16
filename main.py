@@ -4,13 +4,13 @@ import requests
 import uuid
 import os
 import datetime
+import mimetypes
 from flask import Flask, request, jsonify
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from urllib.parse import urlparse, parse_qs
-from werkzeug.datastructures import FileStorage
 
 app = Flask(__name__)
 
@@ -21,7 +21,7 @@ SESSION_DIR = 'user_sessions'
 if not os.path.exists(SESSION_DIR):
     os.makedirs(SESSION_DIR)
 
-# 1 Hour Timeout for massive uploads
+# 1 Hour Timeout
 UPLOAD_TIMEOUT = 3600 
 
 COMMON_HEADERS = {
@@ -33,13 +33,11 @@ COMMON_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9,ur-PK;q=0.8,ur;q=0.7'
 }
 
-# --- HELPER FUNCTIONS ---
 def save_session(custom_id, data):
     try:
         with open(os.path.join(SESSION_DIR, f"{custom_id}.json"), 'w') as f:
             json.dump(data, f, indent=4)
-    except Exception as e:
-        print(f"Error saving session: {e}")
+    except: pass
 
 def load_session(custom_id):
     path = os.path.join(SESSION_DIR, f"{custom_id}.json")
@@ -59,7 +57,6 @@ def get_chrome_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    # New isolated driver for every request
     return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
 def get_random_device_id():
@@ -81,7 +78,6 @@ def unified_api():
             driver.get("https://cloud.jazzdrive.com.pk")
             
             signup_url, device_id = "", None
-            # Wait loop specifically for ID generation
             for _ in range(20):
                 if "signup.php" in driver.current_url:
                     signup_url = driver.current_url
@@ -92,12 +88,9 @@ def unified_api():
             
             if not device_id: device_id = get_random_device_id()
             cookies = {c['name']: c['value'] for c in driver.get_cookies()}
-            
-            # Important: Close driver immediately to free RAM
             driver.quit()
-            driver = None 
             
-            if not signup_url: return jsonify({"status": "error", "message": "Signup URL not found via Selenium"}), 500
+            if not signup_url: return jsonify({"status": "error", "message": "Signup URL not found"}), 500
 
             session = requests.Session()
             session.headers.update(COMMON_HEADERS)
@@ -111,7 +104,7 @@ def unified_api():
                     "device_id": device_id, "cookies": session.cookies.get_dict()
                 })
                 return jsonify({"status": "success", "message": "OTP Sent", "next_action": "verify-otp"})
-            return jsonify({"status": "error", "message": "Failed to get OTP from Jazz"}), 400
+            return jsonify({"status": "error", "message": "Failed to get OTP"}), 400
         except Exception as e:
             if driver: driver.quit()
             return jsonify({"status": "error", "message": str(e)}), 500
@@ -133,9 +126,8 @@ def unified_api():
             resp = session.post(state['verify_url'], data={'otp': otp}, timeout=45)
             qs = parse_qs(urlparse(resp.url).query)
             
-            if 'code' not in qs: return jsonify({"status": "error", "message": "Invalid OTP Code"}), 400
+            if 'code' not in qs: return jsonify({"status": "error", "message": "Invalid OTP"}), 400
             
-            # SAPI Login
             session.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
             resp_login = session.get("https://cloud.jazzdrive.com.pk/sapi/login/oauth", 
                                    params={'action': 'login', 'platform': 'web', 'keytype': 'authorizationcode', 'key': qs['code'][0]},
@@ -151,11 +143,11 @@ def unified_api():
                 })
                 save_session(custom_id, state)
                 return jsonify({"status": "success", "message": "Verified"})
-            return jsonify({"status": "error", "message": "Login Failed (SAPI)"}), 400
+            return jsonify({"status": "error", "message": "Login Failed"}), 400
         except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
 
     # ----------------------------------------------------------------
-    # 3. UPLOAD & SHARE (STREAMING MODE - NO RAM CRASH)
+    # 3. UPLOAD & SHARE (FIXED MIME TYPES)
     # ----------------------------------------------------------------
     elif request.method == 'POST':
         if 'file' not in request.files: return jsonify({"status": "error", "message": "No file"}), 400
@@ -182,32 +174,40 @@ def unified_api():
             requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
                          params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key}, headers=headers, timeout=30)
 
-            # 3.2 UPLOAD (STREAMING)
-            # We determine file size without reading content if possible
+            # 3.2 UPLOAD (MIME TYPE FIX)
             file_obj.seek(0, os.SEEK_END)
             file_size = file_obj.tell()
             file_obj.seek(0)
             
+            # --- CRITICAL FIX: Detect correct MIME type ---
+            mime_type, _ = mimetypes.guess_type(file_obj.filename)
+            if not mime_type:
+                mime_type = "application/octet-stream" # Fallback
+            
+            # Special override for known types to match your logs
+            if file_obj.filename.lower().endswith('.js'): mime_type = 'text/javascript'
+            if file_obj.filename.lower().endswith('.bak'): mime_type = 'application/x-trash'
+
             metadata = {
                 "data": {
                     "name": file_obj.filename,
                     "size": file_size,
                     "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
-                    "contenttype": file_obj.content_type
+                    "contenttype": mime_type # Must match file header
                 }
             }
             
-            # CRITICAL CHANGE: Pass file object's stream directly. DO NOT READ()
+            # Explicitly setting content-type tuple for requests
             files_payload = {
                 'data': (None, json.dumps(metadata)), 
-                'file': (file_obj.filename, file_obj.stream, file_obj.content_type)
+                'file': (file_obj.filename, file_obj.stream, mime_type) # <--- THIS IS THE FIX
             }
             
             resp_up = requests.post("https://cloud.jazzdrive.com.pk/sapi/upload", 
                                   params={'action': 'save', 'acceptasynchronous': 'true', 'validationkey': val_key},
                                   files=files_payload, 
                                   headers=headers, 
-                                  timeout=UPLOAD_TIMEOUT) # 1 Hour Timeout
+                                  timeout=UPLOAD_TIMEOUT)
 
             uploaded_id = None
             try:
@@ -219,13 +219,18 @@ def unified_api():
             if not uploaded_id:
                 return jsonify({"status": "error", "message": "Upload failed", "debug": resp_up.text[:300]})
 
-            # 3.3 Intermediate Requests (To verify file exists on server)
+            # 3.3 Intermediate Requests
             json_headers = headers.copy()
             json_headers['Content-Type'] = 'application/json;charset=UTF-8'
             
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
+                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key}, headers=headers)
+            
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/media", params={'action': 'get-storage-space', 'softdeleted': 'true', 'validationkey': val_key}, headers=headers)
+
             requests.post("https://cloud.jazzdrive.com.pk/sapi/media",
                           params={'action': 'get', 'origin': 'omh,dropbox', 'validationkey': val_key},
-                          json={"data":{"ids":[uploaded_id],"fields":["creationdate","url","shared","uploaded"]}},
+                          json={"data":{"ids":[uploaded_id],"fields":["creationdate","postingdate","name","size","thumbnails","viewurl","url","videometadata","audiometadata","shared","exported","favorite","origin","folderid","labels","modificationdate","uploadeddeviceid","uploaded","etag"]}},
                           headers=json_headers, timeout=45)
 
             # 3.4 SHARE
@@ -247,7 +252,8 @@ def unified_api():
                 "status": "success",
                 "file_id": uploaded_id,
                 "share_link": final_link,
-                "file_size": file_size
+                "file_size_mb": round(file_size/(1024*1024), 2),
+                "detected_mime": mime_type
             })
 
         except Exception as e:
@@ -256,5 +262,4 @@ def unified_api():
     return jsonify({"status": "error", "message": "Invalid Action"}), 400
 
 if __name__ == '__main__':
-    # Threaded=True is vital for concurrency
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), threaded=True)
