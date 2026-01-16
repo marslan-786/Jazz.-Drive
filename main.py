@@ -5,6 +5,7 @@ import uuid
 import os
 import datetime
 import mimetypes
+import threading  # ✅ Added for Keep-Alive
 from flask import Flask, request, jsonify
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -61,6 +62,36 @@ def get_chrome_driver():
 
 def get_random_device_id():
     return f"web-{uuid.uuid4().hex}"
+
+# 💓 KEEP-ALIVE WORKER (NEW)
+# 💓 KEEP-ALIVE WORKER
+def keep_session_alive(val_key, headers, stop_event):
+    """
+    یہ فنکشن بیک گراؤنڈ میں ہر 10 سیکنڈ بعد سرور کو پنگ کرے گا
+    تاکہ سیشن ایکسپائر نہ ہو۔
+    """
+    while not stop_event.is_set():
+        try:
+            # 1. Profile Check
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
+                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key},
+                         headers=headers, timeout=10)
+            
+            # 👇 تبدیلی یہاں کرنی ہے (40 کی جگہ 10)
+            if stop_event.wait(10): break 
+            
+            # 2. Storage Check (Alternate Pings)
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/media",
+                         params={'action': 'get-storage-space', 'softdeleted': 'true', 'validationkey': val_key},
+                         headers=headers, timeout=10)
+            
+            # 👇 تبدیلی یہاں کرنی ہے (40 کی جگہ 10)
+            if stop_event.wait(10): break
+            
+        except Exception as e:
+            print(f"Keep-Alive Error: {e}")
+            # اگر ایرر آئے تو تھوڑا رک کر دوبارہ کوشش کریں
+            if stop_event.wait(5): break
 
 @app.route('/api', methods=['GET', 'POST'])
 def unified_api():
@@ -147,7 +178,7 @@ def unified_api():
         except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
 
     # ----------------------------------------------------------------
-    # 3. UPLOAD & SHARE (FIXED MIME TYPES)
+    # 3. UPLOAD & SHARE (WITH KEEP-ALIVE SYSTEM)
     # ----------------------------------------------------------------
     elif request.method == 'POST':
         if 'file' not in request.files: return jsonify({"status": "error", "message": "No file"}), 400
@@ -169,22 +200,27 @@ def unified_api():
             'Accept': '*/*'
         }
 
+        # Thread Controller
+        stop_alive = threading.Event()
+        alive_thread = None
+
         try:
             # 3.1 Pre-Check
             requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
                          params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key}, headers=headers, timeout=30)
 
-            # 3.2 UPLOAD (MIME TYPE FIX)
+            # 3.2 START KEEP-ALIVE THREAD (The Fix 🚀)
+            alive_thread = threading.Thread(target=keep_session_alive, args=(val_key, headers, stop_alive))
+            alive_thread.daemon = True # اگر مین پروگرام بند ہو تو یہ بھی بند ہو جائے
+            alive_thread.start()
+
+            # 3.3 UPLOAD (BLOCKING)
             file_obj.seek(0, os.SEEK_END)
             file_size = file_obj.tell()
             file_obj.seek(0)
             
-            # --- CRITICAL FIX: Detect correct MIME type ---
             mime_type, _ = mimetypes.guess_type(file_obj.filename)
-            if not mime_type:
-                mime_type = "application/octet-stream" # Fallback
-            
-            # Special override for known types to match your logs
+            if not mime_type: mime_type = "application/octet-stream"
             if file_obj.filename.lower().endswith('.js'): mime_type = 'text/javascript'
             if file_obj.filename.lower().endswith('.bak'): mime_type = 'application/x-trash'
 
@@ -193,21 +229,25 @@ def unified_api():
                     "name": file_obj.filename,
                     "size": file_size,
                     "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
-                    "contenttype": mime_type # Must match file header
+                    "contenttype": mime_type
                 }
             }
             
-            # Explicitly setting content-type tuple for requests
             files_payload = {
                 'data': (None, json.dumps(metadata)), 
-                'file': (file_obj.filename, file_obj.stream, mime_type) # <--- THIS IS THE FIX
+                'file': (file_obj.filename, file_obj.stream, mime_type)
             }
             
+            # اپلوڈ کے دوران اب بیک گراؤنڈ تھریڈ چلتا رہے گا
             resp_up = requests.post("https://cloud.jazzdrive.com.pk/sapi/upload", 
                                   params={'action': 'save', 'acceptasynchronous': 'true', 'validationkey': val_key},
                                   files=files_payload, 
                                   headers=headers, 
                                   timeout=UPLOAD_TIMEOUT)
+
+            # اپلوڈ ختم، تھریڈ روک دیں
+            stop_alive.set()
+            if alive_thread: alive_thread.join()
 
             uploaded_id = None
             try:
@@ -219,21 +259,16 @@ def unified_api():
             if not uploaded_id:
                 return jsonify({"status": "error", "message": "Upload failed", "debug": resp_up.text[:300]})
 
-            # 3.3 Intermediate Requests
+            # 3.4 Intermediate Requests
             json_headers = headers.copy()
             json_headers['Content-Type'] = 'application/json;charset=UTF-8'
             
-            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
-                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key}, headers=headers)
-            
-            requests.get("https://cloud.jazzdrive.com.pk/sapi/media", params={'action': 'get-storage-space', 'softdeleted': 'true', 'validationkey': val_key}, headers=headers)
-
             requests.post("https://cloud.jazzdrive.com.pk/sapi/media",
                           params={'action': 'get', 'origin': 'omh,dropbox', 'validationkey': val_key},
                           json={"data":{"ids":[uploaded_id],"fields":["creationdate","postingdate","name","size","thumbnails","viewurl","url","videometadata","audiometadata","shared","exported","favorite","origin","folderid","labels","modificationdate","uploadeddeviceid","uploaded","etag"]}},
                           headers=json_headers, timeout=45)
 
-            # 3.4 SHARE
+            # 3.5 SHARE
             resp_share = requests.post("https://cloud.jazzdrive.com.pk/sapi/media/set", 
                                      params={'action': 'save', 'validationkey': val_key},
                                      json={"data":{"set":{"items":[uploaded_id]}}}, 
@@ -257,6 +292,9 @@ def unified_api():
             })
 
         except Exception as e:
+            # ایرر کی صورت میں تھریڈ لازمی بند کریں
+            stop_alive.set()
+            if alive_thread: alive_thread.join()
             return jsonify({"status": "error", "message": str(e)}), 500
 
     return jsonify({"status": "error", "message": "Invalid Action"}), 400
