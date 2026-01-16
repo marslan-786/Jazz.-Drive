@@ -21,11 +21,12 @@ if not os.path.exists(SESSION_DIR):
     os.makedirs(SESSION_DIR)
 
 COMMON_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
     'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
     'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Windows"',
-    'Upgrade-Insecure-Requests': '1'
+    'sec-ch-ua-platform': '"Linux"',
+    'Upgrade-Insecure-Requests': '1',
+    'Accept-Language': 'en-US,en;q=0.9,ur-PK;q=0.8,ur;q=0.7'
 }
 
 def save_session(custom_id, data):
@@ -137,7 +138,7 @@ def unified_api():
         except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
 
     # ----------------------------------------------------------------
-    # 3. UPLOAD & SHARE (FIXED)
+    # 3. UPLOAD & SHARE (FULL FLOW MATCHING LOGS)
     # ----------------------------------------------------------------
     elif request.method == 'POST':
         if 'file' not in request.files: return jsonify({"status": "error", "message": "No file"}), 400
@@ -145,8 +146,9 @@ def unified_api():
         if not state or state.get('step') != 'authenticated': return jsonify({"status": "error", "message": "Not authenticated"}), 401
 
         file = request.files['file']
+        val_key = state['validation_key']
         
-        # Headers specifically for Upload
+        # Headers specifically for API Calls
         headers = {
             'Host': 'cloud.jazzdrive.com.pk',
             'Connection': 'keep-alive',
@@ -154,71 +156,99 @@ def unified_api():
             'X-deviceid': state['device_id'],
             'Origin': 'https://cloud.jazzdrive.com.pk',
             'Referer': 'https://cloud.jazzdrive.com.pk/',
-            'Cookie': state['cookie_string']
+            'Cookie': state['cookie_string'],
+            'sec-ch-ua-platform': '"Linux"',
+            'Accept': '*/*'
         }
 
         try:
-            # A. UPLOAD
+            # === STEP 3.1: PRE-UPLOAD CHECK ===
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
+                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key},
+                         headers=headers)
+
+            # === STEP 3.2: UPLOAD FILE ===
             metadata = {
                 "data": {
                     "name": file.filename,
-                    "size": len(file.read()), # Read length
+                    "size": len(file.read()), 
                     "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
                     "contenttype": file.content_type
                 }
             }
-            file.seek(0) # Reset pointer
+            file.seek(0)
             
             files = {
                 'data': (None, json.dumps(metadata)), 
                 'file': (file.filename, file.read(), file.content_type)
             }
             
+            # Using custom boundary if possible, but requests handles it well.
             resp_up = requests.post("https://cloud.jazzdrive.com.pk/sapi/upload", 
-                                  params={'action': 'save', 'acceptasynchronous': 'true', 'validationkey': state['validation_key']},
+                                  params={'action': 'save', 'acceptasynchronous': 'true', 'validationkey': val_key},
                                   files=files, headers=headers, timeout=300)
 
-            # Check ID
             uploaded_id = None
             try:
                 up_json = resp_up.json()
-                if 'id' in up_json: uploaded_id = up_json['id']
-                elif 'data' in up_json and 'id' in up_json['data']: uploaded_id = up_json['data']['id']
+                # Try finding ID in metadata -> files -> [0] -> id (Matching your LOGS)
+                if 'metadata' in up_json and 'files' in up_json['metadata']:
+                    uploaded_id = up_json['metadata']['files'][0]['id']
+                elif 'id' in up_json: 
+                    uploaded_id = up_json['id']
             except: pass
 
             if not uploaded_id:
-                return jsonify({"status": "error", "message": "Upload failed (No ID)", "debug": resp_up.text[:200]})
+                return jsonify({"status": "error", "message": "Upload failed (No ID found)", "debug": resp_up.text[:300]})
 
-            # B. SHARE (Robust Method)
-            share_headers = headers.copy()
-            share_headers['Content-Type'] = 'application/json;charset=UTF-8'
+            # === STEP 3.3: INTERMEDIATE REQUESTS (Matching Logs) ===
             
-            # Payload with explicit headers and JSON
+            # Req 1: Profile Changes again
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
+                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key},
+                         headers=headers)
+            
+            # Req 2: Check Storage Space
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/media",
+                         params={'action': 'get-storage-space', 'softdeleted': 'true', 'validationkey': val_key},
+                         headers=headers)
+
+            # Req 3: Get Media Metadata (Crucial for state update)
+            json_headers = headers.copy()
+            json_headers['Content-Type'] = 'application/json;charset=UTF-8'
+            
+            requests.post("https://cloud.jazzdrive.com.pk/sapi/media",
+                          params={'action': 'get', 'origin': 'omh,dropbox', 'validationkey': val_key},
+                          json={"data":{"ids":[uploaded_id],"fields":["creationdate","postingdate","name","size","thumbnails","viewurl","url","videometadata","audiometadata","shared","exported","favorite","origin","folderid","labels","modificationdate","uploadeddeviceid","uploaded","etag"]}},
+                          headers=json_headers)
+
+            # === STEP 3.4: SHARE LINK (Correct Endpoint) ===
+            
             share_payload = {
                 "data": {
-                    "itemid": uploaded_id,
-                    "permission": 20, 
-                    "password": ""
+                    "set": {
+                        "items": [uploaded_id]
+                    }
                 }
             }
 
-            resp_share = requests.post("https://cloud.jazzdrive.com.pk/sapi/link", 
-                                     params={'action': 'create', 'validationkey': state['validation_key']},
-                                     json=share_payload, headers=share_headers, timeout=30)
+            # Note: Your log shows endpoint is /sapi/media/set NOT /sapi/link
+            resp_share = requests.post("https://cloud.jazzdrive.com.pk/sapi/media/set", 
+                                     params={'action': 'save', 'validationkey': val_key},
+                                     json=share_payload, 
+                                     headers=json_headers, 
+                                     timeout=30)
             
             final_link = "Not Generated"
-            share_status = "error"
             
-            # Check for HTML error
-            if "<html" in resp_share.text.lower():
-                 share_status = "session_expired_during_share"
-            else:
-                try:
-                    share_json = resp_share.json()
-                    if 'url' in share_json: final_link = share_json['url']
-                    elif 'data' in share_json and 'url' in share_json['data']: final_link = share_json['data']['url']
-                    share_status = "success"
-                except: pass
+            try:
+                share_json = resp_share.json()
+                if 'url' in share_json: 
+                    final_link = share_json['url']
+                elif 'data' in share_json and 'url' in share_json['data']:
+                    final_link = share_json['data']['url']
+            except: 
+                pass
 
             # Cleanup
             delete_session(custom_id)
@@ -226,9 +256,8 @@ def unified_api():
             return jsonify({
                 "status": "success",
                 "file_id": uploaded_id,
-                "filename": file.filename,
                 "share_link": final_link,
-                "share_debug": share_status
+                "full_share_response": resp_share.json() if final_link != "Not Generated" else resp_share.text
             })
 
         except Exception as e:
