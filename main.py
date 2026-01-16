@@ -30,13 +30,11 @@ COMMON_HEADERS = {
 
 # --- HELPER FUNCTIONS ---
 def save_session(custom_id, data):
-    """Saves user state to a JSON file"""
     file_path = os.path.join(SESSION_DIR, f"{custom_id}.json")
     with open(file_path, 'w') as f:
         json.dump(data, f, indent=4)
 
 def load_session(custom_id):
-    """Loads user state from JSON file"""
     file_path = os.path.join(SESSION_DIR, f"{custom_id}.json")
     if not os.path.exists(file_path):
         return None
@@ -44,14 +42,11 @@ def load_session(custom_id):
         return json.load(f)
 
 def delete_session(custom_id):
-    """Deletes the JSON file after work is done"""
     file_path = os.path.join(SESSION_DIR, f"{custom_id}.json")
     if os.path.exists(file_path):
         try:
             os.remove(file_path)
-            print(f"[-] Session Deleted: {custom_id}")
-        except:
-            pass
+        except: pass
 
 def get_chrome_driver():
     chrome_options = Options()
@@ -121,12 +116,7 @@ def unified_api():
                     "timestamp": str(datetime.datetime.now())
                 }
                 save_session(custom_id, state_data)
-                
-                return jsonify({
-                    "status": "success", 
-                    "message": "OTP Sent",
-                    "next_action": "verify-otp"
-                })
+                return jsonify({"status": "success", "message": "OTP Sent", "next_action": "verify-otp"})
             else:
                 return jsonify({"status": "error", "message": "Failed to reach verify page"}), 400
 
@@ -159,7 +149,6 @@ def unified_api():
                 
             auth_code = qs['code'][0]
             
-            # Login SAPI
             sapi_url = "https://cloud.jazzdrive.com.pk/sapi/login/oauth"
             params = {'action': 'login', 'platform': 'web', 'keytype': 'authorizationcode', 'key': auth_code}
             session.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
@@ -176,10 +165,7 @@ def unified_api():
                 state['cookie_string'] = f"JSESSIONID={jsession}; validationKey={val_key}; analyticsEnabled=true; cookiesWithPreferencesAccepted=true; cookiesAnalyticsAccepted=true"
                 save_session(custom_id, state)
                 
-                return jsonify({
-                    "status": "success", 
-                    "message": "Verified. Ready to Upload."
-                })
+                return jsonify({"status": "success", "message": "Verified. Ready to Upload."})
             else:
                  return jsonify({"status": "error", "message": "Login Failed"}), 400
 
@@ -187,7 +173,7 @@ def unified_api():
             return jsonify({"status": "error", "message": str(e)}), 500
 
     # ---------------------------------------------------------
-    # ACTION 3: UPLOAD FILE (POST)
+    # ACTION 3: UPLOAD FILE & SHARE (POST) -- FIXED LOGIC
     # ---------------------------------------------------------
     elif request.method == 'POST':
         if 'file' not in request.files:
@@ -228,44 +214,67 @@ def unified_api():
         }
         
         try:
-            resp_upload = requests.post(upload_url, params={'action': 'save', 'acceptasynchronous': 'true', 'validationkey': state['validation_key']}, files=payload, headers=headers, timeout=300)
+            # 1. Perform Upload
+            resp_upload = requests.post(
+                upload_url, 
+                params={'action': 'save', 'acceptasynchronous': 'true', 'validationkey': state['validation_key']}, 
+                files=payload, 
+                headers=headers, 
+                timeout=300
+            )
             
-            final_response = {}
-            success_flag = False
-
-            if '"success":"Media uploaded successfully"' in resp_upload.text:
-                try:
-                    up_data = resp_upload.json()
-                    uploaded_id = up_data.get('data', {}).get('id') or up_data.get('id')
+            # 2. Parse Upload Response CAREFULLY
+            uploaded_id = None
+            try:
+                up_json = resp_upload.json()
+                
+                # CHECK 1: ID at Root (This matches your log)
+                if 'id' in up_json:
+                    uploaded_id = up_json['id']
+                
+                # CHECK 2: ID inside Data (Alternative format)
+                elif 'data' in up_json and 'id' in up_json['data']:
+                    uploaded_id = up_json['data']['id']
                     
-                    if uploaded_id:
-                        share_url = "https://cloud.jazzdrive.com.pk/sapi/link"
-                        share_payload = {"data": {"itemid": uploaded_id, "permission": 20, "password": ""}}
-                        share_headers = headers.copy()
-                        share_headers['Content-Type'] = 'application/json;charset=UTF-8'
-                        
-                        resp_share = requests.post(share_url, params={'action': 'create', 'validationkey': state['validation_key']}, json=share_payload, headers=share_headers)
-                        
-                        final_response = {
-                            "status": "success",
-                            "share_response": resp_share.json(),
-                            "file_id": uploaded_id
-                        }
-                        success_flag = True
+            except:
+                return jsonify({"status": "error", "message": "Invalid JSON response from server", "raw": resp_upload.text})
+
+            # 3. If ID Found -> SHARE
+            if uploaded_id:
+                share_url = "https://cloud.jazzdrive.com.pk/sapi/link"
+                share_payload = {"data": {"itemid": uploaded_id, "permission": 20, "password": ""}}
+                share_headers = headers.copy()
+                share_headers['Content-Type'] = 'application/json;charset=UTF-8'
+                
+                resp_share = requests.post(
+                    share_url, 
+                    params={'action': 'create', 'validationkey': state['validation_key']}, 
+                    json=share_payload, 
+                    headers=share_headers
+                )
+                
+                share_data = {}
+                try:
+                    share_data = resp_share.json()
                 except:
-                    pass
-            
-            if not success_flag:
-                 final_response = {"status": "error", "message": "Upload Failed", "response": resp_upload.text}
+                    share_data = {"raw": resp_share.text}
 
-            # ===============================================
-            # CLEANUP: DELETE SESSION FILE AFTER UPLOAD
-            # ===============================================
-            if success_flag:
+                # SUCCESS: Delete Session & Return
                 delete_session(custom_id)
-            # ===============================================
-
-            return jsonify(final_response)
+                
+                return jsonify({
+                    "status": "success",
+                    "file_id": uploaded_id,
+                    "share_response": share_data
+                })
+            
+            else:
+                # Upload call worked but ID not found in JSON
+                return jsonify({
+                    "status": "error", 
+                    "message": "Upload successful but ID not found", 
+                    "server_response": resp_upload.text
+                })
 
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
