@@ -20,6 +20,9 @@ SESSION_DIR = 'user_sessions'
 if not os.path.exists(SESSION_DIR):
     os.makedirs(SESSION_DIR)
 
+# 1GB Upload needs heavy timeouts (Set to 1 Hour)
+UPLOAD_TIMEOUT = 3600 
+
 COMMON_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
     'sec-ch-ua': '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
@@ -119,7 +122,6 @@ def unified_api():
             
             if 'code' not in qs: return jsonify({"status": "error", "message": "Invalid OTP"}), 400
             
-            # SAPI Login
             session.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
             resp_login = session.get("https://cloud.jazzdrive.com.pk/sapi/login/oauth", 
                                    params={'action': 'login', 'platform': 'web', 'keytype': 'authorizationcode', 'key': qs['code'][0]})
@@ -138,7 +140,7 @@ def unified_api():
         except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
 
     # ----------------------------------------------------------------
-    # 3. UPLOAD & SHARE (FULL FLOW MATCHING LOGS)
+    # 3. UPLOAD & SHARE (LARGE FILE SUPPORT)
     # ----------------------------------------------------------------
     elif request.method == 'POST':
         if 'file' not in request.files: return jsonify({"status": "error", "message": "No file"}), 400
@@ -148,7 +150,6 @@ def unified_api():
         file = request.files['file']
         val_key = state['validation_key']
         
-        # Headers specifically for API Calls
         headers = {
             'Host': 'cloud.jazzdrive.com.pk',
             'Connection': 'keep-alive',
@@ -162,58 +163,50 @@ def unified_api():
         }
 
         try:
-            # === STEP 3.1: PRE-UPLOAD CHECK ===
+            # 3.1 Pre-Checks
             requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
-                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key},
-                         headers=headers)
+                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key}, headers=headers)
 
-            # === STEP 3.2: UPLOAD FILE ===
+            # 3.2 UPLOAD (Heavy Lifting)
+            # Since you have 32GB RAM, reading file into memory is FINE.
+            # But we must ensure file pointer is at start.
+            file_bytes = file.read() 
+            file_size = len(file_bytes)
+            
             metadata = {
                 "data": {
                     "name": file.filename,
-                    "size": len(file.read()), 
+                    "size": file_size,
                     "modificationdate": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
                     "contenttype": file.content_type
                 }
             }
-            file.seek(0)
             
             files = {
                 'data': (None, json.dumps(metadata)), 
-                'file': (file.filename, file.read(), file.content_type)
+                'file': (file.filename, file_bytes, file.content_type)
             }
             
-            # Using custom boundary if possible, but requests handles it well.
+            # TIMEOUT INCREASED TO 3600 SECONDS (1 HOUR)
             resp_up = requests.post("https://cloud.jazzdrive.com.pk/sapi/upload", 
                                   params={'action': 'save', 'acceptasynchronous': 'true', 'validationkey': val_key},
-                                  files=files, headers=headers, timeout=300)
+                                  files=files, headers=headers, timeout=UPLOAD_TIMEOUT)
 
             uploaded_id = None
             try:
                 up_json = resp_up.json()
-                # Try finding ID in metadata -> files -> [0] -> id (Matching your LOGS)
-                if 'metadata' in up_json and 'files' in up_json['metadata']:
-                    uploaded_id = up_json['metadata']['files'][0]['id']
-                elif 'id' in up_json: 
-                    uploaded_id = up_json['id']
+                if 'metadata' in up_json and 'files' in up_json['metadata']: uploaded_id = up_json['metadata']['files'][0]['id']
+                elif 'id' in up_json: uploaded_id = up_json['id']
             except: pass
 
             if not uploaded_id:
-                return jsonify({"status": "error", "message": "Upload failed (No ID found)", "debug": resp_up.text[:300]})
+                return jsonify({"status": "error", "message": "Upload failed", "debug": resp_up.text[:300]})
 
-            # === STEP 3.3: INTERMEDIATE REQUESTS (Matching Logs) ===
-            
-            # Req 1: Profile Changes again
+            # 3.3 Intermediate Requests
             requests.get("https://cloud.jazzdrive.com.pk/sapi/profile/changes", 
-                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key},
-                         headers=headers)
-            
-            # Req 2: Check Storage Space
-            requests.get("https://cloud.jazzdrive.com.pk/sapi/media",
-                         params={'action': 'get-storage-space', 'softdeleted': 'true', 'validationkey': val_key},
-                         headers=headers)
+                         params={'action': 'get', 'from': int(time.time()*1000), 'origin': 'omh,dropbox', 'locked': 'true', 'validationkey': val_key}, headers=headers)
+            requests.get("https://cloud.jazzdrive.com.pk/sapi/media", params={'action': 'get-storage-space', 'softdeleted': 'true', 'validationkey': val_key}, headers=headers)
 
-            # Req 3: Get Media Metadata (Crucial for state update)
             json_headers = headers.copy()
             json_headers['Content-Type'] = 'application/json;charset=UTF-8'
             
@@ -222,42 +215,26 @@ def unified_api():
                           json={"data":{"ids":[uploaded_id],"fields":["creationdate","postingdate","name","size","thumbnails","viewurl","url","videometadata","audiometadata","shared","exported","favorite","origin","folderid","labels","modificationdate","uploadeddeviceid","uploaded","etag"]}},
                           headers=json_headers)
 
-            # === STEP 3.4: SHARE LINK (Correct Endpoint) ===
-            
-            share_payload = {
-                "data": {
-                    "set": {
-                        "items": [uploaded_id]
-                    }
-                }
-            }
-
-            # Note: Your log shows endpoint is /sapi/media/set NOT /sapi/link
+            # 3.4 SHARE
             resp_share = requests.post("https://cloud.jazzdrive.com.pk/sapi/media/set", 
                                      params={'action': 'save', 'validationkey': val_key},
-                                     json=share_payload, 
-                                     headers=json_headers, 
-                                     timeout=30)
+                                     json={"data":{"set":{"items":[uploaded_id]}}}, 
+                                     headers=json_headers, timeout=30)
             
             final_link = "Not Generated"
-            
             try:
                 share_json = resp_share.json()
-                if 'url' in share_json: 
-                    final_link = share_json['url']
-                elif 'data' in share_json and 'url' in share_json['data']:
-                    final_link = share_json['data']['url']
-            except: 
-                pass
+                if 'url' in share_json: final_link = share_json['url']
+                elif 'data' in share_json and 'url' in share_json['data']: final_link = share_json['data']['url']
+            except: pass
 
-            # Cleanup
             delete_session(custom_id)
 
             return jsonify({
                 "status": "success",
                 "file_id": uploaded_id,
                 "share_link": final_link,
-                "full_share_response": resp_share.json() if final_link != "Not Generated" else resp_share.text
+                "file_size_mb": round(file_size / (1024 * 1024), 2)
             })
 
         except Exception as e:
@@ -266,4 +243,5 @@ def unified_api():
     return jsonify({"status": "error", "message": "Invalid Action"}), 400
 
 if __name__ == '__main__':
+    # Threaded mode allows concurrent uploads
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), threaded=True)
